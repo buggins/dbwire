@@ -50,6 +50,12 @@ jobs:
       - name: Unit tests (root package)
         run: dub test
       - name: Unit tests (subpackages)
+        # The TLS unit tests skip when OpenSSL can't be loaded; the runners have it
+        # (Linux: the system library, macOS: Homebrew, Windows: OpenSSL in PATH)
+        env:
+          DBWIRE_REQUIRE_OPENSSL: 1
+          # Checks the system's trusted certificates against a public server
+          DBWIRE_TLS_PUBLIC_HOST: github.com:443
         run: |
           for p in $SUBPACKAGES; do
             echo "::group::dbwire:$p"
@@ -58,10 +64,14 @@ jobs:
           done
       - name: Fiber-mode tests (vibe-core 2.x)
         timeout-minutes: 10
+        env:
+          DBWIRE_TLS_PUBLIC_HOST: github.com:443
         run: dub run --root=tests-vibe
       - name: Fiber-mode tests (vibe-core 1.x)
         if: matrix.os == 'ubuntu-latest' && matrix.dc == 'ldc-latest'
         timeout-minutes: 10
+        env:
+          DBWIRE_TLS_PUBLIC_HOST: github.com:443
         run: dub run --root=tests-vibe1
 
   lint:

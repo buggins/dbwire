@@ -17,6 +17,7 @@ import vibe.core.task : InterruptException, Task;
 
 import dbwire.exception : ClientException, ConnectionException;
 import dbwire.io;
+import dbwire.tls : TlsContext, TlsOptions, TlsTransport;
 
 version (Have_vibe_core)
 {
@@ -63,6 +64,7 @@ private int runAll()
         Test("yieldNow", &testYield),
         Test("FiberLock", &testLock),
         Test("FiberPoolSync", &testPoolSync),
+        Test("TLS to a public server (DBWIRE_TLS_PUBLIC_HOST)", &testTlsPublicHost),
     ];
     startWatchdog();
     int failures;
@@ -495,6 +497,44 @@ private void testPoolSync()
     check(sync.wait(5.seconds), "wait missed notifyAll");
     sync.unlock();
     notifier.join();
+}
+
+/// TLS over a fiber-mode transport, verified with the system's trusted
+/// certificates. Opt-in, as it needs the internet: CI sets
+/// DBWIRE_TLS_PUBLIC_HOST, e.g. to github.com:443.
+private void testTlsPublicHost()
+{
+    import std.algorithm.searching : findSplit, startsWith;
+    import std.conv : to;
+    import std.process : environment;
+
+    const target = environment.get("DBWIRE_TLS_PUBLIC_HOST", "");
+    if (target.length == 0)
+    {
+        report("     (skipped: DBWIRE_TLS_PUBLIC_HOST is not set)");
+        return;
+    }
+    auto parts = target.findSplit(":");
+    const host = parts[0];
+    const port = parts[2].length ? parts[2].to!ushort : cast(ushort) 443;
+    auto backend = backendFor(IoMode.auto_);
+    check(backend.name == "vibe", "not in fiber mode");
+    TlsOptions options;
+    auto tls = new TlsTransport(backend.connect(host, port, 10.seconds), backend, TlsContext.client(options), host,
+            options, 10.seconds);
+    scope (exit)
+        tls.close();
+    tls.setTimeouts(10.seconds, 10.seconds);
+    tls.write(cast(const(ubyte)[])("HEAD / HTTP/1.1\r\nHost: " ~ host ~ "\r\nConnection: close\r\n\r\n"));
+    auto reply = new ubyte[64];
+    size_t got;
+    while (got < 12)
+    {
+        const n = tls.read(reply[got .. $]);
+        check(n > 0, "the server closed the connection");
+        got += n;
+    }
+    check((cast(const(char)[]) reply[0 .. got]).startsWith("HTTP/1."), "not an HTTP reply");
 }
 
 private string joinEvents(string[] events)
