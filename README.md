@@ -10,7 +10,7 @@ share the parts that are not protocol-specific. Its value types (exact decimals,
 128/256-bit integers) are also meant for [ddbc](https://github.com/buggins/ddbc)
 and [hibernated](https://github.com/buggins/hibernated).
 
-> **Status: 0.3.0.** `dbwire:types`, `dbwire:io`, `dbwire:tls`,
+> **Status: 0.4.0.** `dbwire:types`, `dbwire:io`, `dbwire:tls`,
 > `dbwire:charset` and `dbwire:client` are in place; `dbwire:crypto` is still
 > empty. The API may change until 1.0, which is planned together with
 > clickhoused 1.0. The plan is tracked in the
@@ -27,7 +27,7 @@ Depend only on what you need:
 | `dbwire:io`      | transports and I/O backends: blocking Phobos sockets and vibe.d fibers        | vibe-core (optional)      |
 | `dbwire:tls`     | TLS over any transport, with OpenSSL loaded at run time                       | none at build time        |
 | `dbwire:crypto`  | (planned) pure-D AES, PBKDF2, MD4, secure random for authentication           | none                      |
-| `dbwire:charset` | UTF-16 and the code pages of SQL Server collations (single-byte, UTF-8)       | none                      |
+| `dbwire:charset` | UTF-16 and the code pages of SQL Server collations (single/double-byte, UTF-8)| none                      |
 | `dbwire:client`  | connection strings, host failover, connection pool core                       | none                      |
 | `dbwire`         | all of the above                                                              |                           |
 
@@ -35,7 +35,7 @@ For example, in `dub.json`:
 
 ```json
 "dependencies": {
-    "dbwire:types": "~>0.3.0"
+    "dbwire:types": "~>0.4.0"
 }
 ```
 
