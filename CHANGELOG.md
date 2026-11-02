@@ -4,7 +4,12 @@ All notable changes to dbwire are documented here. The format follows
 [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and the project uses
 [semantic versioning](https://semver.org/).
 
-## Unreleased
+## 0.1.0 — 2026-11-02
+
+First release: the building blocks extracted from clickhoused (`dbwire:types`,
+`dbwire:io`, `dbwire:tls`, `dbwire:client`). `dbwire:crypto` and
+`dbwire:charset` are still empty; they come with the SQL Server and Oracle
+connectors.
 
 ### Added
 
