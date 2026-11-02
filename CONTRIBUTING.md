@@ -20,6 +20,8 @@ branch, and mention `Closes #N` in the pull request.
 dub build                    # everything
 dub test                     # unit tests of the root package
 dub test :types              # unit tests of one subpackage (types, io, tls, crypto, charset, client)
+dub run --root=tests-vibe    # fiber-mode tests inside vibe.d tasks (vibe-core 2.x)
+dub run --root=tests-vibe1   # the same with vibe-core 1.x
 ```
 
 ## Code style and checks

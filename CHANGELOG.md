@@ -20,6 +20,21 @@ All notable changes to dbwire are documented here. The format follows
     `precision` and `normalized`;
   - `MonthInterval`: intervals of years and months;
   - `resolveTimeZone`: time zones by name, cached per thread (from clickhoused).
+- `dbwire:io` (#4), from clickhoused's I/O layer:
+  - `Transport`, `TransportFactory`; `IoMode`, `IoBackend`, `IoLock`, `PoolSync`,
+    `backendFor`, `inVibeTask`;
+  - thread mode (`PhobosBackend`, `PhobosTransport`, `ThreadLock`,
+    `ThreadPoolSync`) and fiber mode (`VibeBackend`, `VibeTransport`,
+    `FiberLock`, `FiberPoolSync`; vibe-core 1.22+ and 2.x, optional);
+  - `BufferedReader`/`BufferedWriter` without the ClickHouse encodings (they
+    stay in clickhoused): raw bytes, little- and big-endian fixed-size values
+    (`readFixedBE`/`writeFixedBE`, `fromBigEndian`/`toBigEndian` are new),
+    strings of a known length (`readExactString`, `readExactBytes`), and buffer
+    access for protocol decoders and encoders (`ensure`, `window`, `consume`,
+    `reserve`, `commit`); `StringArena` is now public;
+  - `MockTransport` for tests;
+  - fiber-mode test runners `tests-vibe` (vibe-core 2.x) and `tests-vibe1`
+    (vibe-core 1.22.6), run by CI.
 - Repository scaffold (#2): the root package and the subpackages `dbwire:types`,
   `dbwire:io`, `dbwire:tls`, `dbwire:crypto`, `dbwire:charset` and
   `dbwire:client` (still empty), CI on Linux, Windows and macOS with DMD and
