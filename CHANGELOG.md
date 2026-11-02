@@ -4,6 +4,22 @@ All notable changes to dbwire are documented here. The format follows
 [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and the project uses
 [semantic versioning](https://semver.org/).
 
+## 0.3.0 — 2026-11-02
+
+### Added
+
+- `dbwire:charset` (#11):
+  - UTF-16 in either byte order: `encodeUtf16le`/`be`, `decodeUtf16le`/`be`.
+    Decoding never fails: unpaired surrogates become U+FFFD; invalid UTF-8
+    given to the encoders becomes U+FFFD too.
+  - `CodePage`: the Windows code pages of SQL Server collations, 437, 850, 874
+    and 1250 to 1258, plus UTF-8 (65001). `decode` never fails (undefined bytes
+    map as Windows maps them, invalid UTF-8 becomes U+FFFD); `encode` throws
+    `ClientException` for characters the page doesn't have, or substitutes a
+    replacement byte. The tables were produced by SQL Server 2022 converting
+    every byte through a column of each code page. Double-byte pages (932, 936,
+    949, 950) come later.
+
 ## 0.2.0 — 2026-11-02
 
 ### Added
