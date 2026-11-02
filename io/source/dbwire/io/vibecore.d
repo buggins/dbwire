@@ -83,7 +83,12 @@ final class VibeTransport : Transport
     {
         checkThread();
         try
-            return connection.dataAvailableForRead;
+        {
+            version (Windows)
+                return connection.peek().length > 0 || socketReadable(connection.fd);
+            else
+                return connection.dataAvailableForRead;
+        }
         catch (Exception e)
             throw new ConnectionException("Socket check failed: " ~ e.msg);
     }
@@ -226,6 +231,27 @@ bool inVibeTask() @safe nothrow
     import vibe.core.task : Task;
 
     return Task.getThis() != Task.init;
+}
+
+version (Windows)
+{
+    /++
+    Whether the socket has data to read (or the peer closed it, or it failed),
+    checked without reading. `TCPConnection.dataAvailableForRead` can't be used
+    on Windows: it does an immediate read, and eventcore's WinAPI driver
+    (0.9.x) loses the data of an immediate read that completes at once.
+    +/
+    private bool socketReadable(int fd) @trusted nothrow @nogc
+    {
+        import core.sys.windows.winsock2 : fd_set, select, SOCKET, timeval;
+
+        // select() only reads the set and the zero timeout; the handle is the connection's socket
+        fd_set set;
+        set.fd_count = 1;
+        set.fd_array[0] = cast(SOCKET) cast(uint) fd;
+        timeval zero;
+        return select(0, &set, null, null, &zero) != 0;
+    }
 }
 
 private Thread currentThread() @trusted nothrow

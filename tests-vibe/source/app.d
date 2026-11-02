@@ -231,6 +231,9 @@ private void testRoundTrip()
     const deadline = MonoTime.currTime + 5.seconds;
     while (!transport.dataAvailable && MonoTime.currTime < deadline)
         sleep(5.msecs);
+    // Checking again must not consume the data (eventcore's WinAPI driver lost it)
+    foreach (i; 0 .. 3)
+        check(transport.dataAvailable, "data no longer available");
     check(readSome(transport, 3) == [1, 2, 3], "echo differs");
     transport.close();
     server.stop();
