@@ -35,6 +35,7 @@ dbwire must remain pure BSL-1.0 code written for this project.
 - **Other database clients, drivers and libraries are reference only. Never copy or translate their code** (line-by-line translation counts as copying), whatever their license. Wire-format facts are fine to reproduce. For SQL Server, don't use FreeTDS or jTDS at all (LGPL).
 - **Algorithms are written from their specifications** (FIPS-197, RFC 8018, RFC 1320, ...), with the specification's known-answer test vectors.
 - If any third-party code or data ever seems necessary, **stop and ask the user first**.
+- Crypto (`crypto/`): every algorithm is written from its specification (FIPS-197, SP 800-38A, RFC 8018, RFC 1320) and tested with the published vectors; extra reference values come from OpenSSL's command line and Python's `hashlib`, never from another library's code. AES is byte-oriented and not constant-time (login handshakes only); bulk encryption should go through OpenSSL when it exists.
 - Code page tables (`charset/source/dbwire/charset/tables.d`, and the double-byte ones in `charset/tables/*.bin`, see its README) are produced by SQL Server itself (each byte stored in a `varchar(1)` column of a collation with that code page, then converted to `nvarchar`), i.e. Windows' own conversion; approved by the author. Add new pages the same way.
 
 ## Layout

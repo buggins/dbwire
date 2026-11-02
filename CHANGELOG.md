@@ -4,6 +4,22 @@ All notable changes to dbwire are documented here. The format follows
 [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and the project uses
 [semantic versioning](https://semver.org/).
 
+## 0.5.0 — 2026-11-02
+
+### Added
+
+- `dbwire:crypto` (#10), pure D, each part written from its specification and
+  checked against its published test vectors:
+  - `Aes` (FIPS-197): AES-128/192/256 block encryption and decryption;
+    `cbcEncrypt`/`cbcDecrypt` (NIST SP 800-38A); `pkcs7Pad`/`pkcs7Unpad`.
+    Byte-oriented and not constant-time: meant for login handshakes (Oracle's
+    O5LOGON), not bulk encryption;
+  - `pbkdf2!H` (RFC 8018) over HMAC with any Phobos digest, e.g. SHA-512 for
+    Oracle 12c password keys;
+  - `MD4` (RFC 1320) with Phobos' digest interface, for NTLM;
+  - `randomBytes`: secure random bytes from the operating system
+    (`getrandom`, `/dev/urandom`, `arc4random_buf`, `BCryptGenRandom`).
+
 ## 0.4.0 — 2026-11-02
 
 ### Added
