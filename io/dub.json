@@ -1,0 +1,16 @@
+{
+    "name": "io",
+    "description": "Byte-stream transports and I/O backends for database connectors: blocking Phobos sockets and vibe.d fibers",
+    "license": "BSL-1.0",
+    "targetType": "library",
+    "toolchainRequirements": {
+        "frontend": ">=2.097"
+    },
+    "dependencies": {
+        "dbwire:types": "*",
+        "vibe-core": {
+            "version": ">=1.22.0 <3.0.0",
+            "optional": true
+        }
+    }
+}

@@ -1,2 +1,44 @@
 # dbwire
-Shared types, transport, cryptography for DB connectors
+
+Shared building blocks for native D database connectors: value types, transports
+for threads and vibe.d fibers, TLS, cryptography, character sets and connection
+plumbing.
+
+dbwire is extracted from [clickhoused](https://github.com/buggins/clickhoused),
+the native ClickHouse client, so that native connectors for other databases can
+share the parts that are not protocol-specific. Its value types (exact decimals,
+128/256-bit integers) are also meant for [ddbc](https://github.com/buggins/ddbc)
+and [hibernated](https://github.com/buggins/hibernated).
+
+> **Status: under development.** The repository is being set up; nothing is
+> released yet. The plan is tracked in the
+> [roadmap issue](https://github.com/buggins/dbwire/issues/13).
+
+## Subpackages
+
+Depend only on what you need:
+
+| Subpackage       | Contents                                                                      | Dependencies              |
+|------------------|-------------------------------------------------------------------------------|---------------------------|
+| `dbwire:types`   | exceptions, exact decimals, 128/256-bit integers, intervals, time zones       | none                      |
+| `dbwire:io`      | transports and I/O backends: blocking Phobos sockets and vibe.d fibers        | vibe-core (optional)      |
+| `dbwire:tls`     | TLS over any transport, with OpenSSL loaded at run time                       | none at build time        |
+| `dbwire:crypto`  | pure-D AES, PBKDF2, MD4 and secure random bytes for authentication protocols  | none                      |
+| `dbwire:charset` | UTF-16 and code page conversions                                              | none                      |
+| `dbwire:client`  | connection strings, host failover, connection pool core                       | none                      |
+| `dbwire`         | all of the above                                                              |                           |
+
+Principles:
+
+- **Pure D, zero C dependencies by default.** C libraries are optional extras
+  loaded at run time (OpenSSL for TLS); when one is missing, only the feature
+  that needs it fails, with a clear exception.
+- **Threads and fibers.** Everything that can block goes through one I/O
+  interface with two implementations: blocking Phobos sockets, and vibe-core
+  sockets for vibe.d tasks. vibe-core is optional: it is used only when your
+  application depends on it.
+- **D frontend 2.097 or newer**: DMD 2.097+, LDC 1.27+, GDC 12+.
+
+## License
+
+[Boost Software License 1.0](LICENSE).

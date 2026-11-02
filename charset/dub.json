@@ -1,0 +1,12 @@
+{
+    "name": "charset",
+    "description": "Character set conversions for database protocols: UTF-16 and code pages",
+    "license": "BSL-1.0",
+    "targetType": "library",
+    "toolchainRequirements": {
+        "frontend": ">=2.097"
+    },
+    "dependencies": {
+        "dbwire:types": "*"
+    }
+}

@@ -1,0 +1,12 @@
+{
+    "name": "crypto",
+    "description": "Pure-D cryptography for database authentication protocols: AES, PBKDF2, MD4, secure random",
+    "license": "BSL-1.0",
+    "targetType": "library",
+    "toolchainRequirements": {
+        "frontend": ">=2.097"
+    },
+    "dependencies": {
+        "dbwire:types": "*"
+    }
+}
