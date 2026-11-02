@@ -33,7 +33,7 @@ public import dbwire.types;
 /// Library version.
 enum uint dbwireVersionMajor = 0;
 /// ditto
-enum uint dbwireVersionMinor = 4;
+enum uint dbwireVersionMinor = 5;
 /// ditto
 enum uint dbwireVersionPatch = 0;
 
