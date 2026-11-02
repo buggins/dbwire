@@ -25,6 +25,15 @@ import dbwire.io.backend : IoBackend, IoLock;
 import dbwire.tls.openssl;
 import dbwire.io.transport : Transport;
 
+/// TLS protocol versions (`TlsOptions.minVersion`). TLS 1.0 and 1.1 are not supported.
+enum TlsVersion
+{
+    /// TLS 1.2 (RFC 5246).
+    tls12,
+    /// TLS 1.3 (RFC 8446).
+    tls13,
+}
+
 /// TLS settings for a connection.
 struct TlsOptions
 {
@@ -39,6 +48,17 @@ struct TlsOptions
     /// Name to send (SNI) and verify instead of the host connected to, e.g. when
     /// connecting through an IP address, a tunnel or a proxy.
     string serverName;
+    /// The lowest protocol version to accept.
+    TlsVersion minVersion = TlsVersion.tls12;
+    /// The highest protocol version to offer, e.g. TLS 1.2 for a handshake that
+    /// runs inside protocol packets (see `TlsTransport`'s `handshakeTransport`).
+    TlsVersion maxVersion = TlsVersion.tls13;
+    /++
+    Application protocols to offer with ALPN (RFC 7301), most preferred first,
+    e.g. `["tds/8.0"]`; empty: no ALPN. `TlsTransport.alpnProtocol` tells which
+    one the server selected.
+    +/
+    string[] alpn;
 }
 
 /++
@@ -59,6 +79,8 @@ final class TlsContext
         string certFile;
         string keyFile;
         bool skipVerify;
+        TlsVersion minVersion;
+        TlsVersion maxVersion;
     }
 
     private __gshared TlsContext[Key] cache;
@@ -72,7 +94,8 @@ final class TlsContext
     +/
     static TlsContext client(const TlsOptions options) @safe
     {
-        const key = Key(options.caFile, options.certFile, options.keyFile, options.skipVerify);
+        const key = Key(options.caFile, options.certFile, options.keyFile, options.skipVerify, options.minVersion,
+                options.maxVersion);
         synchronized
         {
             if (auto found = cachedContext(key))
@@ -98,7 +121,10 @@ final class TlsContext
         ctx = api.sslCtxNew(server ? api.tlsServerMethod() : api.tlsClientMethod());
         if (ctx is null)
             throw new ClientException("Cannot create a TLS context: " ~ errorQueueText(api));
-        api.sslCtxCtrl(ctx, sslCtrlSetMinProtoVersion, tls12Version, null);
+        if (options.minVersion > options.maxVersion)
+            throw new ClientException("TlsOptions.minVersion is above maxVersion");
+        api.sslCtxCtrl(ctx, sslCtrlSetMinProtoVersion, protocolNumber(options.minVersion), null);
+        api.sslCtxCtrl(ctx, sslCtrlSetMaxProtoVersion, protocolNumber(options.maxVersion), null);
 
         void check(int result, string what)
         {
@@ -135,6 +161,11 @@ final class TlsContext
         }
     }
 
+    private static int protocolNumber(TlsVersion v) @safe pure nothrow @nogc
+    {
+        return v == TlsVersion.tls13 ? tls13Version : tls12Version;
+    }
+
     private static TlsContext cachedContext(const Key key) @trusted
     {
         auto found = key in cache; // only called inside the synchronized block of client()
@@ -152,6 +183,12 @@ A TLS connection over a raw `Transport`.
 
 The constructor performs the handshake. Afterwards the object is used like
 any other transport; `close` also closes the raw transport.
+
+Two features serve protocols that run TLS inside their own messages, such as
+SQL Server's TDS 7.x: the handshake can go through another transport than the
+data (`handshakeTransport`, e.g. an adapter that wraps the handshake records
+in the protocol's packets), and `detach` ends TLS while the connection goes on
+unencrypted.
 +/
 final class TlsTransport : Transport
 {
@@ -180,31 +217,42 @@ final class TlsTransport : Transport
         backend = the I/O backend of the connection, which provides the locks.
         context = the client context, from `TlsContext.client`.
         host = the host connected to.
-        options = TLS options; only `serverName` and `skipVerify` are used here.
-        handshakeTimeout = receive and send timeout set on `raw` for the
+        options = TLS options; `serverName`, `skipVerify` and `alpn` are used
+            here, the others by `TlsContext.client`.
+        handshakeTimeout = receive and send timeout set on the transport of the
             handshake. The caller sets the normal timeouts afterwards.
+        handshakeTransport = if not null, the transport the handshake goes
+            through, e.g. an adapter over `raw` that wraps the records in the
+            protocol's packets; the data that follows goes through `raw`.
+            Records the peer sends after its last handshake message must not
+            reach this transport: with TLS 1.3 a server sends session tickets
+            right after the handshake, so protocols that frame the handshake
+            (SQL Server's TDS 7.x) use TLS 1.2.
 
     Throws: `ConnectionException` if the handshake fails or the server
     certificate is not accepted.
     +/
     this(Transport raw, IoBackend backend, TlsContext context, string host, const TlsOptions options,
-            Duration handshakeTimeout) @safe
+            Duration handshakeTimeout, Transport handshakeTransport = null) @safe
     {
         const name = options.serverName.length ? options.serverName : host;
-        this(raw, backend, context, false, name, !options.skipVerify, handshakeTimeout);
+        this(raw, backend, context, false, name, !options.skipVerify, options.alpn, handshakeTimeout,
+                handshakeTransport);
     }
 
     /// Accepts a TLS connection as the server (used by the unit tests).
     package static TlsTransport accept(Transport raw, IoBackend backend, TlsContext context,
-            Duration handshakeTimeout) @safe
+            Duration handshakeTimeout, Transport handshakeTransport = null) @safe
     {
-        return new TlsTransport(raw, backend, context, true, "the client", false, handshakeTimeout);
+        return new TlsTransport(raw, backend, context, true, "the client", false, null, handshakeTimeout,
+                handshakeTransport);
     }
 
     private this(Transport raw, IoBackend backend, TlsContext context, bool server, string name, bool verifyName,
-            Duration handshakeTimeout) @safe
+            const string[] alpn, Duration handshakeTimeout, Transport handshakeTransport) @safe
     {
-        this.raw = raw;
+        auto via = handshakeTransport !is null ? handshakeTransport : raw;
+        this.raw = via;
         api = context.api;
         peerName = name;
         sslLock = backend.newLock();
@@ -212,11 +260,15 @@ final class TlsTransport : Transport
         input = new ubyte[17 * 1024]; // one maximum-size TLS record and its overhead
         plainBuffer = new ubyte[16 * 1024];
         scope (failure)
+        {
             close();
+            raw.close(); // when the handshake went through an adapter, close the transport too
+        }
         failed = true; // until the handshake completes, close() must not send a close_notify
-        createSsl(context, server, verifyName);
-        raw.setTimeouts(handshakeTimeout, handshakeTimeout);
+        createSsl(context, server, verifyName, alpn);
+        via.setTimeouts(handshakeTimeout, handshakeTimeout);
         handshake();
+        this.raw = raw;
         failed = false;
     }
 
@@ -346,6 +398,43 @@ final class TlsTransport : Transport
         raw.setTimeouts(receive, send);
     }
 
+    /++
+    Ends TLS without sending a close_notify and returns the raw transport, which
+    stays open; this object is closed afterwards. For protocols that encrypt
+    only part of a connection: SQL Server encrypts only its login packet when
+    neither side asks for encryption.
+
+    Call it after the last encrypted write and before reading anything the
+    peer sends unencrypted, with no other call in progress.
+
+    Throws: `ClientException` if decrypted or received data is still buffered
+    (it would be lost); `ConnectionException` if the transport is closed.
+    +/
+    Transport detach() @safe
+    {
+        checkOpen();
+        if (plain.length || sslPendingBytes() > 0 || receivedPending() > 0)
+            throw new ClientException("Cannot end TLS: data received from " ~ peerName ~ " is not read yet");
+        closed = true;
+        freeSsl();
+        return raw;
+    }
+
+    /// The application protocol the server selected with ALPN (see `TlsOptions.alpn`), or empty.
+    @property string alpnProtocol() @trusted
+    {
+        // copies bytes owned by the live connection while holding its lock
+        sslLock.lock();
+        scope (exit)
+            sslLock.unlock();
+        if (ssl is null)
+            return "";
+        const(ubyte)* data;
+        uint length;
+        api.sslGet0AlpnSelected(ssl, &data, &length);
+        return data is null ? "" : (cast(const(char)[]) data[0 .. length]).idup;
+    }
+
     /// The negotiated protocol, e.g. `"TLSv1.3"`.
     @property string protocolVersion() @trusted
     {
@@ -385,7 +474,7 @@ final class TlsTransport : Transport
         }
     }
 
-    private void createSsl(TlsContext context, bool server, bool verifyName) @trusted
+    private void createSsl(TlsContext context, bool server, bool verifyName, const string[] alpn) @trusted
     {
         // OpenSSL objects are created and connected here; the strings are zero-terminated
         // copies, and OpenSSL copies them in turn.
@@ -412,6 +501,20 @@ final class TlsTransport : Transport
             return;
         }
         api.sslSetConnectState(ssl);
+        if (alpn.length)
+        {
+            // The ALPN list: each name as a length byte and its bytes; OpenSSL copies it
+            ubyte[] protos;
+            foreach (p; alpn)
+            {
+                if (p.length == 0 || p.length > 255)
+                    throw new ClientException("Invalid ALPN protocol name '" ~ p ~ "'");
+                protos ~= cast(ubyte) p.length;
+                protos ~= cast(const(ubyte)[]) p;
+            }
+            if (api.sslSetAlpnProtos(ssl, protos.ptr, cast(uint) protos.length) != 0)
+                throw new ConnectionException("Cannot set the ALPN protocols: " ~ errorQueueText(api));
+        }
         const ip = isIpLiteral(peerName);
         if (!ip) // SNI carries host names only (RFC 6066)
             api.sslCtrl(ssl, sslCtrlSetTlsextHostname, tlsextNametypeHostName, cast(void*) peerName.toStringz);
@@ -538,6 +641,16 @@ final class TlsTransport : Transport
         api.errClearError();
         // With a memory BIO for output, SSL_write consumes all of data or fails
         return api.sslWrite(ssl, data.ptr, cast(int) data.length) == cast(int) data.length;
+    }
+
+    /// Bytes received from the peer and not decrypted yet (in the input BIO).
+    private c_long receivedPending() @trusted
+    {
+        sslLock.lock();
+        scope (exit)
+            sslLock.unlock();
+        checkSsl();
+        return api.bioCtrl(rbio, bioCtrlPending, 0, null);
     }
 
     private int sslPendingBytes() @trusted
@@ -732,7 +845,7 @@ private bool isIpLiteral(string name) @safe pure nothrow @nogc
 version (unittest)
 {
     import core.thread : Thread;
-    import core.time : msecs, seconds;
+    import core.time : MonoTime, msecs, seconds;
     import std.socket : InternetAddress, TcpSocket;
 
     import dbwire.io.phobos : PhobosBackend, PhobosTransport;
@@ -1126,6 +1239,301 @@ unittest
     serverWriter.join();
     clientWriter.join();
     serverReader.join();
+}
+
+version (unittest)
+{
+    /++
+    A test stand-in for protocol packets around TLS records (as SQL Server's
+    PRELOGIN packets): every write becomes a frame with a 4-byte big-endian
+    length; reads return the frames' contents.
+    +/
+    private final class FramingTransport : Transport
+    {
+        Transport inner;
+        size_t framesWritten;
+        size_t framesRead;
+        private ubyte[] pending;
+
+        this(Transport inner) @safe
+        {
+            this.inner = inner;
+        }
+
+        override size_t read(scope ubyte[] buffer) @safe
+        {
+            if (pending.length == 0)
+            {
+                ubyte[4] header;
+                if (!readAll(header[]))
+                    return 0;
+                const length = (cast(size_t) header[0] << 24) | (header[1] << 16) | (header[2] << 8) | header[3];
+                pending = new ubyte[length];
+                if (!readAll(pending))
+                    return 0;
+                framesRead++;
+            }
+            const n = buffer.length < pending.length ? buffer.length : pending.length;
+            buffer[0 .. n] = pending[0 .. n];
+            pending = pending[n .. $];
+            return n;
+        }
+
+        override void write(scope const(ubyte)[] data) @safe
+        {
+            const length = data.length;
+            const ubyte[4] header = [
+                cast(ubyte)(length >> 24), cast(ubyte)(length >> 16), cast(ubyte)(length >> 8),
+                cast(ubyte) length
+            ];
+            inner.write(header[] ~ data);
+            framesWritten++;
+        }
+
+        override bool dataAvailable() @safe
+        {
+            return pending.length > 0 || inner.dataAvailable();
+        }
+
+        override void close() @safe nothrow
+        {
+            inner.close();
+        }
+
+        override bool connected() const @safe nothrow
+        {
+            return inner.connected;
+        }
+
+        override void setTimeouts(Duration receive, Duration send) @safe
+        {
+            inner.setTimeouts(receive, send);
+        }
+
+        private bool readAll(scope ubyte[] buffer) @safe
+        {
+            size_t got;
+            while (got < buffer.length)
+            {
+                const n = inner.read(buffer[got .. $]);
+                if (n == 0)
+                    return false;
+                got += n;
+            }
+            return true;
+        }
+    }
+
+    /// A TLS pair whose handshakes go through `FramingTransport`s; the data afterwards goes directly.
+    private struct FramedPair
+    {
+        TlsPair tls;
+        FramingTransport clientFraming;
+        FramingTransport serverFraming;
+    }
+
+    private FramedPair connectFramedPair() @system
+    {
+        // TLS 1.2, as SQL Server's TDS 7.x handshakes: a TLS 1.3 server sends its session
+        // tickets right after the handshake, still through the adapter
+        auto server = serverContext(false);
+        server.api.sslCtxCtrl(server.ctx, sslCtrlSetMaxProtoVersion, tls12Version, null);
+        auto listener = new TcpSocket;
+        scope (exit)
+            listener.close();
+        listener.bind(new InternetAddress("127.0.0.1", InternetAddress.PORT_ANY));
+        listener.listen(1);
+        const port = (cast(InternetAddress) listener.localAddress).port;
+
+        FramedPair pair;
+        auto backend = new PhobosBackend;
+        auto serverThread = new Thread({
+            try
+            {
+                auto raw = new PhobosTransport(listener.accept());
+                pair.serverFraming = new FramingTransport(raw);
+                pair.tls.server = TlsTransport.accept(raw, backend, server, 10.seconds, pair.serverFraming);
+                pair.tls.server.setTimeouts(10.seconds, 10.seconds);
+            }
+            catch (Exception e)
+                pair.tls.serverError = e;
+        });
+        serverThread.start();
+        try
+        {
+            auto raw = backend.connect("127.0.0.1", port, 10.seconds);
+            pair.clientFraming = new FramingTransport(raw);
+            const options = trustingOptions();
+            pair.tls.client = new TlsTransport(raw, backend, new TlsContext(options, false), "localhost", options,
+                    10.seconds, pair.clientFraming);
+            pair.tls.client.setTimeouts(10.seconds, 10.seconds);
+        }
+        catch (Exception e)
+            pair.tls.clientError = e;
+        serverThread.join();
+        return pair;
+    }
+
+    /// Server-side ALPN for the tests: selects "tds/8.0" when the client offers it.
+    private extern (C) int selectTds(Ssl* ssl, const(ubyte)** output, ubyte* outputLength, const(ubyte)* input,
+            uint inputLength, void* arg) nothrow @nogc @system
+    {
+        static immutable ubyte[7] wanted = cast(immutable(ubyte)[7]) "tds/8.0";
+        uint pos;
+        while (pos < inputLength)
+        {
+            const length = input[pos];
+            const fits = pos + 1 + length <= inputLength;
+            if (length == wanted.length && fits && input[pos + 1 .. pos + 1 + length] == wanted[])
+            {
+                *output = input + pos + 1;
+                *outputLength = length;
+                return sslTlsextErrOk;
+            }
+            pos += 1 + length;
+        }
+        return sslTlsextErrNoAck;
+    }
+}
+
+// The handshake goes through an adapter (as inside SQL Server's PRELOGIN packets),
+// the data afterwards directly over the raw transport
+@system unittest
+{
+    if (!haveOpenSsl())
+        return;
+    auto pair = connectFramedPair();
+    scope (exit)
+        pair.tls.close();
+    assert(pair.tls.clientError is null && pair.tls.serverError is null);
+    assert(pair.clientFraming.framesWritten > 0 && pair.serverFraming.framesWritten > 0);
+    const clientFrames = pair.clientFraming.framesWritten;
+    const serverFrames = pair.serverFraming.framesWritten;
+
+    pair.tls.client.write(cast(const(ubyte)[]) "hello");
+    auto got = new ubyte[5];
+    readExactly(pair.tls.server, got);
+    assert(got == "hello");
+    pair.tls.server.write(cast(const(ubyte)[]) "world!");
+    got = new ubyte[6];
+    readExactly(pair.tls.client, got);
+    assert(got == "world!");
+    // no more frames: the records went directly over the sockets
+    assert(pair.clientFraming.framesWritten == clientFrames && pair.serverFraming.framesWritten == serverFrames);
+}
+
+// detach: TLS ends, the connection goes on unencrypted (SQL Server's login-only encryption)
+@system unittest
+{
+    import std.exception : assertThrown;
+
+    if (!haveOpenSsl())
+        return;
+    auto pair = connectFramedPair();
+    assert(pair.tls.clientError is null && pair.tls.serverError is null);
+
+    pair.tls.client.write(cast(const(ubyte)[]) "login");
+    auto got = new ubyte[5];
+    readExactly(pair.tls.server, got);
+    assert(got == "login");
+    auto clientRaw = pair.tls.client.detach();
+    auto serverRaw = pair.tls.server.detach();
+    scope (exit)
+    {
+        clientRaw.close();
+        serverRaw.close();
+    }
+    assert(!pair.tls.client.connected && clientRaw.connected);
+    assertThrown!ConnectionException(pair.tls.client.write([1]));
+    pair.tls.client.close(); // does nothing now: the raw transport stays open
+    assert(clientRaw.connected);
+
+    serverRaw.write(cast(const(ubyte)[]) "plain answer");
+    got = new ubyte[12];
+    readExactly(clientRaw, got);
+    assert(got == "plain answer"); // unencrypted bytes on the socket
+}
+
+// detach refuses while received data would be lost
+@system unittest
+{
+    import std.exception : assertThrown;
+
+    if (!haveOpenSsl())
+        return;
+    auto pair = connectPair(trustingOptions());
+    scope (exit)
+        pair.close();
+    assert(pair.clientError is null && pair.serverError is null);
+    pair.server.write(cast(const(ubyte)[]) "unread");
+    const deadline = MonoTime.currTime + 10.seconds;
+    while (!pair.client.dataAvailable && MonoTime.currTime < deadline)
+        Thread.sleep(1.msecs);
+    assertThrown!ClientException(pair.client.detach());
+    auto got = new ubyte[6];
+    readExactly(pair.client, got); // still usable
+    assert(got == "unread");
+}
+
+// ALPN
+@system unittest
+{
+    import std.exception : assertThrown;
+
+    if (!haveOpenSsl())
+        return;
+    auto server = serverContext(false);
+    server.api.sslCtxSetAlpnSelectCb(server.ctx, &selectTds, null);
+
+    auto options = trustingOptions();
+    options.alpn = ["h2", "tds/8.0"];
+    auto pair = connectPair(options, "localhost", server);
+    assert(pair.clientError is null && pair.serverError is null);
+    assert(pair.client.alpnProtocol == "tds/8.0" && pair.server.alpnProtocol == "tds/8.0");
+    pair.close();
+
+    pair = connectPair(trustingOptions(), "localhost", server); // no ALPN offered
+    assert(pair.clientError is null && pair.client.alpnProtocol == "");
+    pair.close();
+
+    options.alpn = [""];
+    pair = connectPair(options, "localhost", server);
+    assert(cast(ClientException) pair.clientError !is null);
+    pair.close();
+}
+
+// The minimum protocol version
+@system unittest
+{
+    if (!haveOpenSsl())
+        return;
+    auto options = trustingOptions();
+    options.minVersion = TlsVersion.tls13;
+    auto pair = connectPair(options);
+    assert(pair.clientError is null && pair.client.protocolVersion == "TLSv1.3");
+    pair.close();
+
+    auto tls12Only = serverContext(false);
+    tls12Only.api.sslCtxCtrl(tls12Only.ctx, sslCtrlSetMaxProtoVersion, tls12Version, null);
+    pair = connectPair(options, "localhost", tls12Only);
+    assert(cast(ConnectionException) pair.clientError !is null, "a TLS 1.2 server was accepted");
+    pair.close();
+
+    pair = connectPair(trustingOptions(), "localhost", tls12Only); // the default minimum is TLS 1.2
+    assert(pair.clientError is null && pair.client.protocolVersion == "TLSv1.2");
+    pair.close();
+
+    // A client capped at TLS 1.2 gets TLS 1.2 from a server that offers 1.3
+    auto capped = trustingOptions();
+    capped.maxVersion = TlsVersion.tls12;
+    pair = connectPair(capped);
+    assert(pair.clientError is null && pair.client.protocolVersion == "TLSv1.2");
+    pair.close();
+
+    import std.exception : assertThrown;
+
+    capped.minVersion = TlsVersion.tls13;
+    assertThrown!ClientException(new TlsContext(capped, false));
 }
 
 // On Windows, client contexts trust the certificates of the system store

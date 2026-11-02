@@ -62,7 +62,11 @@ package enum int sslFiletypePem = 1;
 package enum int sslCtrlSetTlsextHostname = 55; // SSL_set_tlsext_host_name is SSL_ctrl(55, 0, name)
 package enum int tlsextNametypeHostName = 0;
 package enum int sslCtrlSetMinProtoVersion = 123; // SSL_CTX_set_min_proto_version is SSL_CTX_ctrl(123, v)
+package enum int sslCtrlSetMaxProtoVersion = 124; // SSL_CTX_set_max_proto_version is SSL_CTX_ctrl(124, v)
 package enum int tls12Version = 0x0303;
+package enum int tls13Version = 0x0304;
+package enum int sslTlsextErrOk = 0;
+package enum int sslTlsextErrNoAck = 3;
 package enum int bioCtrlPending = 10; // BIO_pending is BIO_ctrl(10)
 package enum c_long x509VOk = 0;
 package enum int sslKeyUpdateRequested = 1;
@@ -137,7 +141,17 @@ extern (C) nothrow @nogc:
     @LibSsl("SSL_get_current_cipher") const(SslCipher)* function(const(Ssl)* s) sslGetCurrentCipher;
     @LibSsl("SSL_CIPHER_get_name") const(char)* function(const(SslCipher)* c) sslCipherGetName;
     @LibSsl("SSL_key_update") int function(Ssl* s, int updatetype) sslKeyUpdate;
+    // ALPN (OpenSSL 1.0.2+). Note: SSL_set_alpn_protos returns 0 on success.
+    @LibSsl("SSL_set_alpn_protos") int function(Ssl* ssl, const(ubyte)* protos, uint protosLen) sslSetAlpnProtos;
+    @LibSsl("SSL_get0_alpn_selected")
+    void function(const(Ssl)* ssl, const(ubyte)** data, uint* len) sslGet0AlpnSelected;
+    @LibSsl("SSL_CTX_set_alpn_select_cb")
+    void function(SslCtx* ctx, AlpnSelectCallback cb, void* arg) sslCtxSetAlpnSelectCb;
 }
+
+/// Server-side ALPN selection callback (`SSL_CTX_alpn_select_cb_func`).
+package alias AlpnSelectCallback = extern (C) int function(Ssl* ssl, const(ubyte)** output, ubyte* outputLength,
+        const(ubyte)* input, uint inputLength, void* arg) nothrow @nogc;
 
 /// A pair of library files to try together.
 private struct Candidate

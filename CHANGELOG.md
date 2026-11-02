@@ -4,6 +4,22 @@ All notable changes to dbwire are documented here. The format follows
 [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and the project uses
 [semantic versioning](https://semver.org/).
 
+## 0.2.0 — 2026-11-02
+
+### Added
+
+- TLS for protocols that run it inside their own messages, such as SQL
+  Server's TDS 7.x (#9):
+  - `TlsTransport` takes an optional `handshakeTransport`: the handshake goes
+    through it (e.g. an adapter wrapping the records in PRELOGIN packets), the
+    data afterwards through the raw transport;
+  - `TlsTransport.detach()` ends TLS without a close_notify and returns the
+    raw transport, for login-only encryption;
+  - `TlsOptions.minVersion` and `maxVersion` (`TlsVersion.tls12`, `tls13`);
+  - `TlsOptions.alpn` and `TlsTransport.alpnProtocol` (ALPN, e.g. `tds/8.0`).
+  Checked against SQL Server 2022: PRELOGIN, then a TLS 1.2 handshake inside
+  PRELOGIN packets.
+
 ## 0.1.1 — 2026-11-02
 
 ### Changed
