@@ -49,10 +49,14 @@ tls/     dbwire:tls         source/dbwire/tls/{openssl,transport}.d, testdata/ (
                                                                                     io; libs-windows: crypt32
 crypto/  dbwire:crypto      source/dbwire/crypto/                                   types
 charset/ dbwire:charset     source/dbwire/charset/                                  types
-client/  dbwire:client      source/dbwire/client/                                   io
+client/  dbwire:client      source/dbwire/client/{dsn,hosts,pool}.d                 io
 tests-vibe/                 fiber-mode tests (vibe-core 2.x): a standalone package, run with --root
 tests-vibe1/                the same sources against vibe-core 1.22.6
 ```
+
+Notes on `dbwire:client`:
+- Connectors keep their own options types and typed wrappers; dbwire has no `ConnectionOptions`, `ConnectionPool` or `PooledConnection` (those names stay with the connectors, e.g. clickhoused). A connector's `Connection` implements `Poolable` (`isOpen`, `isBusy`, `ping`, `close`); its pool wraps `PoolCore` and its pooled handle wraps a `PoolLease` (non-copyable: move it into the wrapper).
+- dscanner treats reading a property as "never modified" but a call with parentheses as a use: write `lease.connection()` in tests where a lease would otherwise be flagged, or use a temporary (`pool.acquire();` returns the connection at once).
 
 Notes on `dbwire:tls`:
 - OpenSSL is loaded at run time (`dbwire.tls.openssl`, our own declarations of the few functions used); `TlsContext.client` fails with a `ClientException` when it can't be loaded or a certificate file is unusable, handshake and verification failures are `ConnectionException`s.
