@@ -13,6 +13,7 @@ jobs:
   test:
     name: test (${{ matrix.os }}, ${{ matrix.dc }})
     runs-on: ${{ matrix.os }}
+    timeout-minutes: 30
     strategy:
       fail-fast: false
       matrix:
@@ -56,9 +57,11 @@ jobs:
             echo "::endgroup::"
           done
       - name: Fiber-mode tests (vibe-core 2.x)
+        timeout-minutes: 10
         run: dub run --root=tests-vibe
       - name: Fiber-mode tests (vibe-core 1.x)
         if: matrix.os == 'ubuntu-latest' && matrix.dc == 'ldc-latest'
+        timeout-minutes: 10
         run: dub run --root=tests-vibe1
 
   lint:

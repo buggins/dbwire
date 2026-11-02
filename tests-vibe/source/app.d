@@ -10,7 +10,7 @@ module app;
 import core.thread : Thread;
 import core.time : Duration, MonoTime, msecs, seconds;
 import std.socket : InternetAddress, Socket, SocketOption, SocketOptionLevel, SocketShutdown, TcpSocket;
-import std.stdio : stderr, writefln;
+import std.stdio : stderr, stdout, writefln;
 
 import vibe.core.core : exitEventLoop, runEventLoop, runTask, sleep;
 import vibe.core.task : InterruptException, Task;
@@ -64,22 +64,73 @@ private int runAll()
         Test("FiberLock", &testLock),
         Test("FiberPoolSync", &testPoolSync),
     ];
+    startWatchdog();
     int failures;
     foreach (test; tests)
     {
+        report("RUN  %s", test.name);
+        watchdogStart(test.name);
         try
         {
             test.run();
-            writefln("PASS %s", test.name);
+            report("PASS %s", test.name);
         }
         catch (Exception e)
         {
-            writefln("FAIL %s: %s", test.name, e.msg);
+            report("FAIL %s: %s", test.name, e.msg);
             failures++;
         }
     }
-    writefln("%s tests, %s failed", tests.length, failures);
+    watchdogStart(null);
+    report("%s tests, %s failed", tests.length, failures);
     return failures;
+}
+
+/// Prints a line at once (stdout is block-buffered when CI pipes it).
+private void report(Args...)(string format, Args args)
+{
+    writefln(format, args);
+    stdout.flush();
+}
+
+/// Longest time a test may take before the watchdog ends the process.
+private enum Duration testTimeLimit = 30.seconds;
+
+private __gshared string watchedTest; // the running test, or null
+private __gshared MonoTime watchedSince;
+
+private void watchdogStart(string name)
+{
+    import core.atomic : atomicFence;
+
+    watchedSince = MonoTime.currTime;
+    watchedTest = name;
+    atomicFence();
+}
+
+/// A thread that ends the process when a test hangs, naming the test.
+private void startWatchdog()
+{
+    static void watch()
+    {
+        import core.stdc.stdlib : exit;
+
+        for (;;)
+        {
+            Thread.sleep(1.seconds);
+            const name = watchedTest;
+            if (name !is null && MonoTime.currTime - watchedSince > testTimeLimit)
+            {
+                stderr.writefln("TIMEOUT %s: still running after %s", name, testTimeLimit);
+                stderr.flush();
+                exit(2);
+            }
+        }
+    }
+
+    auto watchdog = new Thread(&watch);
+    watchdog.isDaemon = true;
+    watchdog.start();
 }
 
 private struct Test
@@ -113,6 +164,8 @@ private final class TestServer
             auto connection = l.accept();
             scope (exit)
                 connection.close();
+            // A server waiting for the client to close gives up eventually
+            connection.setOption(SocketOptionLevel.SOCKET, SocketOption.RCVTIMEO, 10.seconds);
             handler(connection);
         });
         thread.isDaemon = true;
@@ -124,9 +177,14 @@ private final class TestServer
         return backendFor(IoMode.auto_).connect("127.0.0.1", port, 5.seconds);
     }
 
+    /// Waits for the server thread without blocking the event loop: closing a
+    /// vibe-core connection may need the event loop (e.g. on Windows).
     void stop()
     {
-        thread.join();
+        const deadline = MonoTime.currTime + 10.seconds;
+        while (thread.isRunning && MonoTime.currTime < deadline)
+            sleep(5.msecs);
+        check(!thread.isRunning, "the test server did not finish");
         listener.close();
     }
 }
