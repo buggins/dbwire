@@ -17,6 +17,9 @@
         "dbwire:tls": {
             "path": "../"
         },
+        "dbwire:client": {
+            "path": "../"
+        },
         "vibe-core": "1.22.6"
     }
 }

@@ -17,6 +17,7 @@ import vibe.core.task : InterruptException, Task;
 
 import dbwire.exception : ClientException, ConnectionException;
 import dbwire.io;
+import dbwire.client : PoolCore, PoolOptions, Poolable;
 import dbwire.tls : TlsContext, TlsOptions, TlsTransport;
 
 version (Have_vibe_core)
@@ -64,6 +65,7 @@ private int runAll()
         Test("yieldNow", &testYield),
         Test("FiberLock", &testLock),
         Test("FiberPoolSync", &testPoolSync),
+        Test("connection pool shared by tasks", &testPoolTasks),
         Test("TLS to a public server (DBWIRE_TLS_PUBLIC_HOST)", &testTlsPublicHost),
     ];
     startWatchdog();
@@ -497,6 +499,97 @@ private void testPoolSync()
     check(sync.wait(5.seconds), "wait missed notifyAll");
     sync.unlock();
     notifier.join();
+}
+
+/// A connection for the pool test.
+private final class PoolConn : Poolable
+{
+    int id;
+    bool open = true;
+
+    this(int id) @safe
+    {
+        this.id = id;
+    }
+
+    @property bool isOpen() const @safe nothrow
+    {
+        return open;
+    }
+
+    @property bool isBusy() const @safe nothrow
+    {
+        return false;
+    }
+
+    void ping() @safe
+    {
+    }
+
+    void close() @safe nothrow
+    {
+        open = false;
+    }
+}
+
+private void testPoolTasks()
+{
+    // Tasks on one thread share a fiber-mode pool: a waiting task gets the
+    // connection another task returns, without blocking the event loop
+    PoolOptions options;
+    options.maxConnections = 1;
+    options.waitTimeout = 5.seconds;
+    int opened;
+    Poolable open() @safe
+    {
+        return new PoolConn(++opened);
+    }
+
+    auto pool = new PoolCore(options, IoMode.auto_, &open);
+    string events;
+    void holder() nothrow
+    {
+        try
+        {
+            auto lease = pool.acquire();
+            events ~= lease.connection() !is null ? "a" : "?";
+            sleep(50.msecs);
+            events ~= "r";
+        }
+        catch (Exception)
+            events ~= "!";
+    }
+
+    void waiter() nothrow
+    {
+        try
+        {
+            sleep(10.msecs);
+            auto lease = pool.acquire();
+            events ~= (cast(PoolConn) lease.connection).id == 1 ? "b" : "?";
+        }
+        catch (Exception)
+            events ~= "!";
+    }
+
+    auto a = runTask(&holder);
+    auto b = runTask(&waiter);
+    a.join();
+    b.join();
+    check(events == "arb", "order: " ~ events);
+    check(opened == 1 && pool.idleConnections == 1 && pool.activeConnections == 0, "unexpected pool state");
+
+    // The wait timeout works in fiber mode too
+    options.waitTimeout = 50.msecs;
+    auto small = new PoolCore(options, IoMode.auto_, &open);
+    auto held = small.acquire();
+    check(held.connection() !is null, "no connection");
+    bool timedOut;
+    try
+        small.acquire();
+    catch (ClientException)
+        timedOut = true;
+    check(timedOut, "no timeout waiting for a connection");
 }
 
 /// TLS over a fiber-mode transport, verified with the system's trusted

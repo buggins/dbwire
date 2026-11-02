@@ -1,6 +1,6 @@
 {
     "name": "dbwire-tests-vibe",
-    "description": "Runs the dbwire fiber-mode tests (io, tls) inside vibe.d tasks, with vibe-core 2.x",
+    "description": "Runs the dbwire fiber-mode tests (io, tls, client) inside vibe.d tasks, with vibe-core 2.x",
     "license": "BSL-1.0",
     "targetType": "executable",
     "targetName": "tests-vibe",
@@ -9,6 +9,9 @@
             "path": "../"
         },
         "dbwire:tls": {
+            "path": "../"
+        },
+        "dbwire:client": {
             "path": "../"
         },
         "vibe-core": "~>2.14"

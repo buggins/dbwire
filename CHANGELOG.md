@@ -46,6 +46,20 @@ All notable changes to dbwire are documented here. The format follows
   test certificates (`make-test-certs.sh`); the test switches are now
   `DBWIRE_REQUIRE_OPENSSL` and `DBWIRE_TLS_PUBLIC_HOST`. The vibe runners also
   check TLS in fiber mode against `DBWIRE_TLS_PUBLIC_HOST`.
+- `dbwire:client` (#6), from clickhoused's connection options and pool,
+  without the ClickHouse specifics:
+  - `Dsn.parse`: URL-style connection strings (`scheme://user:password@h1:p1,h2/path?k=v`,
+    percent-decoded, IPv6 in brackets), `parseQuery`, and the value parsers
+    `parseSeconds`, `parseFlag`, `parseEnumValue`;
+  - `HostPort`, `parseHostPort`, `HostSelection`, `orderHosts`, and
+    `connectFirst`: the failover loop (network and protocol errors move on to
+    the next host, other errors such as a rejected login stop);
+  - `PoolCore`: the pool for thread mode (one shared set of connections) and
+    fiber mode (one set per thread), with lazy expiry and health checks and no
+    I/O under its lock, over connections implementing `Poolable`; `PoolLease`
+    returns a connection when it goes out of scope; `PoolOptions` with
+    `fromParams`/`fromDsn` (`pool_*` parameters). Unit tests with fake
+    connections, and a fiber-mode test in the vibe runners.
 - Repository scaffold (#2): the root package and the subpackages `dbwire:types`,
   `dbwire:io`, `dbwire:tls`, `dbwire:crypto`, `dbwire:charset` and
   `dbwire:client` (still empty), CI on Linux, Windows and macOS with DMD and
