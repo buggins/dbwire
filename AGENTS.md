@@ -63,6 +63,7 @@ Notes on `dbwire:tls`:
 - Server-side TLS (`TlsTransport.accept`, server contexts) is `package`: only the unit tests use it.
 - Test switches: `DBWIRE_REQUIRE_OPENSSL=1` turns "OpenSSL not found" from a skip into a failure; `DBWIRE_TLS_PUBLIC_HOST=github.com:443` verifies a public server with the system trust store (unit tests and the vibe runners; needs the internet). CI sets both on every OS.
 - Trusted CAs without `caFile`: OpenSSL's default paths, plus the Windows `ROOT` store imported through crypt32. macOS needs Homebrew's `openssl@3` (the system LibreSSL is not used). On Windows, closing a socket with unread data resets the connection, which can discard data in transit (a close_notify included).
+- Protocols that frame the TLS handshake (SQL Server TDS 7.x: records inside PRELOGIN packets, type 0x12, with 8-byte TDS headers; afterwards TLS records directly over TCP) pass a `handshakeTransport`; `detach()` serves login-only encryption. Use TLS 1.2 (`maxVersion`) for framed handshakes: a TLS 1.3 server sends session tickets right after the handshake, which would still go through the adapter. Checked against SQL Server 2022, which negotiates TLS 1.2 there anyway.
 - Regenerate the test certificates with `sh make-test-certs.sh` in `tls/source/dbwire/tls/testdata` (test-only keys, committed on purpose).
 
 Notes on `dbwire:io`:
