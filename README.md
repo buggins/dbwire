@@ -10,9 +10,12 @@ share the parts that are not protocol-specific. Its value types (exact decimals,
 128/256-bit integers) are also meant for [ddbc](https://github.com/buggins/ddbc)
 and [hibernated](https://github.com/buggins/hibernated).
 
-> **Status: under development.** The repository is being set up; nothing is
-> released yet. The plan is tracked in the
-> [roadmap issue](https://github.com/buggins/dbwire/issues/13).
+> **Status: 0.1.0.** `dbwire:types`, `dbwire:io`, `dbwire:tls` and
+> `dbwire:client` are in place; `dbwire:crypto` and `dbwire:charset` are still
+> empty. The API may change until 1.0, which is planned together with
+> clickhoused 1.0. The plan is tracked in the
+> [roadmap issue](https://github.com/buggins/dbwire/issues/13); changes are
+> listed in the [changelog](CHANGELOG.md).
 
 ## Subpackages
 
@@ -23,10 +26,26 @@ Depend only on what you need:
 | `dbwire:types`   | exceptions, exact decimals, 128/256-bit integers, intervals, time zones       | none                      |
 | `dbwire:io`      | transports and I/O backends: blocking Phobos sockets and vibe.d fibers        | vibe-core (optional)      |
 | `dbwire:tls`     | TLS over any transport, with OpenSSL loaded at run time                       | none at build time        |
-| `dbwire:crypto`  | pure-D AES, PBKDF2, MD4 and secure random bytes for authentication protocols  | none                      |
-| `dbwire:charset` | UTF-16 and code page conversions                                              | none                      |
+| `dbwire:crypto`  | (planned) pure-D AES, PBKDF2, MD4, secure random for authentication           | none                      |
+| `dbwire:charset` | (planned) UTF-16 and code page conversions                                    | none                      |
 | `dbwire:client`  | connection strings, host failover, connection pool core                       | none                      |
 | `dbwire`         | all of the above                                                              |                           |
+
+For example, in `dub.json`:
+
+```json
+"dependencies": {
+    "dbwire:types": "~>0.1.0"
+}
+```
+
+```d
+import dbwire.types;
+
+auto price = Decimal.fromString("19.995", 2, RoundingMode.halfUp);
+assert(price.toString() == "20" && price.toFixedString() == "20.00");
+assert(Decimal(Int256(5), -3).toString() == "5000"); // negative scales, for Oracle NUMBER
+```
 
 Principles:
 
