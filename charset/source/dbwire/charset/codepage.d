@@ -1,13 +1,21 @@
 /++
-Text in Windows code pages: the single-byte pages that SQL Server collations
-use (437, 850, 874, 1250 to 1258) and UTF-8 (65001).
+Text in Windows code pages: the code pages that SQL Server collations use,
+single-byte (437, 850, 874, 1250 to 1258) and double-byte (932 Japanese, 936
+Simplified Chinese, 949 Korean, 950 Traditional Chinese), and UTF-8 (65001).
 
-Bytes below 0x80 are ASCII in all of them. Decoding never fails: every byte of
-a single-byte page maps to a character (undefined bytes as Windows maps them,
-see `dbwire.charset.tables`), and invalid UTF-8 becomes U+FFFD. Encoding fails
-on characters the code page doesn't have, unless a replacement byte is given.
+Bytes below 0x80 are ASCII in all of them. Decoding never fails, and follows
+Windows' own conversion: every byte of a single-byte page maps to a character
+(undefined bytes as Windows maps them, see `dbwire.charset.tables`); in a
+double-byte page a lead byte and the next byte make one character, an invalid
+pair gives the page's default character (U+30FB in 932, `?` in the others), a
+lead byte before 0x00 gives the default character and the 0x00, and a lead byte
+at the end is dropped; invalid UTF-8 becomes U+FFFD. Encoding fails on
+characters the code page doesn't have, unless a replacement byte is given; it
+never substitutes a similar character ("best fit").
 
-The double-byte pages (932, 936, 949, 950) are not supported yet.
+The tables of the double-byte pages are produced by SQL Server converting every
+byte pair, and every character back (`charset/tables/README.md`); they follow
+Windows, e.g. the bytes 0xC6A1 to 0xC7FC of 950 are private-use characters.
 
 Copyright: Copyright © 2026, Vadim Lopatin
 License:   $(LINK2 https://www.boost.org/LICENSE_1_0.txt, Boost License 1.0).
@@ -25,8 +33,13 @@ private enum uint[] singleBytePages = [
     437, 850, 874, 1250, 1251, 1252, 1253, 1254, 1255, 1256, 1257, 1258
 ];
 
+private enum uint[] doubleBytePages = [932, 936, 949, 950];
+
 /// The supported code pages, in increasing order.
-immutable uint[] supportedCodePages = singleBytePages ~ utf8CodePage;
+immutable uint[] supportedCodePages = [
+    437, 850, 874, 932, 936, 949, 950, 1250, 1251, 1252, 1253, 1254, 1255, 1256, 1257, 1258,
+    utf8CodePage
+];
 
 /++
 A character set given by its Windows code page number. Get one with `find` or
@@ -37,11 +50,20 @@ struct CodePage
     private uint number_;
     private immutable(wchar)[] high; // characters of bytes 0x80..0xFF; null for UTF-8
     private immutable(uint)[] reverse; // (character << 8 | byte) of `high`, sorted
+    private immutable(ubyte)[] dbcs; // double-byte pages: the decode table (see Dbcs)
+    private immutable(ubyte)[] dbcsLeads; // lead byte -> its table's number + 1; 0 if not a lead byte
+    private immutable(ubyte)[] dbcsEncode; // (u16 character, u16 bytes) pairs, sorted by character
 
     /// The code page number, e.g. 1252.
     @property uint number() const @safe pure nothrow @nogc
     {
         return number_;
+    }
+
+    /// Whether this is a double-byte code page (932, 936, 949, 950).
+    @property bool isDoubleByte() const @safe pure nothrow @nogc
+    {
+        return dbcs !is null;
     }
 
     /// Whether this is UTF-8.
@@ -70,6 +92,15 @@ struct CodePage
                 page = make(n, mixin("cp" ~ toChars(n))[], Reverse!n.table[]);
                 return true;
             }
+            static foreach (n; doubleBytePages)
+            {
+        case n:
+                page = make(n, null, null);
+                page.dbcs = Dbcs!n.decode;
+                page.dbcsLeads = Dbcs!n.leads[];
+                page.dbcsEncode = Dbcs!n.encode;
+                return true;
+            }
         case utf8CodePage:
             page = make(utf8CodePage, null, null);
             return true;
@@ -96,6 +127,8 @@ struct CodePage
     /// Decodes `bytes` in this code page as UTF-8.
     string decode(scope const(ubyte)[] bytes) const @safe pure nothrow
     {
+        if (dbcs !is null)
+            return decodeDoubleByte(bytes);
         size_t length;
         foreach (b; bytes)
             length += b < 0x80 ? 1 : high is null ? 4 : high[b - 0x80] < 0x800 ? 2 : 3;
@@ -128,11 +161,80 @@ struct CodePage
         return (() @trusted => cast(string) result)(); // result is unique: built here
     }
 
-    /// The byte of character `c` in this single-byte code page, or -1 if it has none.
+    private string decodeDoubleByte(scope const(ubyte)[] bytes) const @safe pure nothrow
+    {
+        char[] result;
+        result.reserve(bytes.length * 3 / 2 + 1);
+        for (size_t i = 0; i < bytes.length;)
+        {
+            const b = bytes[i];
+            if (b < 0x80)
+            {
+                result ~= cast(char) b;
+                i++;
+                continue;
+            }
+            const lead = dbcsLeads[b];
+            if (lead == 0)
+            {
+                appendUtf8(result, dbcsChar(0, b)); // a single byte
+                i++;
+                continue;
+            }
+            if (i + 1 >= bytes.length)
+                break; // a lead byte at the end: dropped, as Windows does
+            const trail = bytes[i + 1];
+            appendUtf8(result, dbcsChar(lead, trail)); // trail 0: the default character
+            i += trail == 0 ? 1 : 2; // a 0x00 trail byte stays a character of its own
+        }
+        return (() @trusted => cast(string) result)(); // result is unique: built here
+    }
+
+    /// Entry `index` of table `table` (0: the single bytes) of the double-byte decode table.
+    private wchar dbcsChar(size_t table, size_t index) const @safe pure nothrow @nogc
+    {
+        const at = (table * 256 + index) * 2;
+        return cast(wchar)(dbcs[at] | (dbcs[at + 1] << 8));
+    }
+
+    /++
+    The bytes of character `c` in this code page, or -1 if it has none: one
+    byte (below 0x100), or a lead and a trail byte (`lead << 8 | trail`) in a
+    double-byte page.
+    +/
+    int bytesOf(dchar c) const @safe pure nothrow @nogc
+    {
+        if (dbcs is null)
+            return byteOf(c);
+        if (c < 0x80)
+            return c;
+        if (c > 0xFFFF)
+            return -1;
+        size_t lo = 0, hi = dbcsEncode.length / 4;
+        while (lo < hi)
+        {
+            const mid = (lo + hi) / 2;
+            const key = dbcsEncode[4 * mid] | (dbcsEncode[4 * mid + 1] << 8);
+            if (key < c)
+                lo = mid + 1;
+            else
+                hi = mid;
+        }
+        if (lo == dbcsEncode.length / 4 || (dbcsEncode[4 * lo] | (dbcsEncode[4 * lo + 1] << 8)) != c)
+            return -1;
+        return dbcsEncode[4 * lo + 2] | (dbcsEncode[4 * lo + 3] << 8);
+    }
+
+    /// The byte of character `c` in this code page, or -1 if it has none or needs two bytes (see `bytesOf`).
     int byteOf(dchar c) const @safe pure nothrow @nogc
     {
         if (c < 0x80)
             return c;
+        if (dbcs !is null)
+        {
+            const b = bytesOf(c);
+            return b < 0x100 ? b : -1;
+        }
         if (c > 0xFFFF || high is null)
             return -1;
         size_t lo = 0, hi = reverse.length;
@@ -188,12 +290,12 @@ struct CodePage
         {
             const start = i;
             const c = decodeUtf8(text, i);
-            if (c >= 0 && high is null) // UTF-8: copy valid sequences
+            if (c >= 0 && isUtf8) // UTF-8: copy valid sequences
             {
                 result ~= cast(const(ubyte)[]) text[start .. i];
                 continue;
             }
-            int b = c < 0 ? -1 : byteOf(c);
+            int b = c < 0 ? -1 : bytesOf(c);
             if (b < 0)
             {
                 if (replacement < 0)
@@ -201,6 +303,8 @@ struct CodePage
                             "Character U+%04X has no equivalent in code page %s", c, number_.to!string));
                 b = replacement;
             }
+            if (b >= 0x100)
+                result ~= cast(ubyte)(b >> 8); // the lead byte
             result ~= cast(ubyte) b;
         }
         return result;
@@ -221,9 +325,13 @@ struct CodePage
     assert(CodePage.get(1251).decode([0xEC, 0xE8, 0xF0]) == "мир");
     assert(CodePage.get(utf8CodePage).decode([0xC3, 0xA9, 0xFF]) == "é\uFFFD"); // invalid UTF-8 becomes U+FFFD
 
+    const japanese = CodePage.get(932); // Shift-JIS, as Windows has it
+    assert(japanese.decode([0x93, 0xFA, 0x96, 0x7B, 0x8C, 0xEA, 0x20, 0xB1]) == "日本語 ｱ");
+    assert(japanese.encode("日本語 ｱ") == [0x93, 0xFA, 0x96, 0x7B, 0x8C, 0xEA, 0x20, 0xB1]);
+
     CodePage page;
-    assert(!CodePage.find(932, page)); // double-byte pages: not yet
-    assertThrown!ClientException(CodePage.get(932));
+    assert(!CodePage.find(20_127, page));
+    assertThrown!ClientException(CodePage.get(20_127));
 }
 
 private string decodeUtf8Text(scope const(ubyte)[] bytes) @safe pure nothrow
@@ -240,6 +348,33 @@ private string decodeUtf8Text(scope const(ubyte)[] bytes) @safe pure nothrow
             result ~= text[start .. i];
     }
     return (() @trusted => cast(string) result)(); // result is unique: built here
+}
+
+/++
+The tables of double-byte code page `n` (files in `charset/tables`, see its README):
+`decode`: 256 little-endian `u16` for the single bytes (0xFFFF for lead bytes),
+then 256 for each lead byte in increasing order (entry 0: the default
+character); `encode`: (`u16` character, `u16` bytes) pairs sorted by character.
++/
+private template Dbcs(uint n)
+{
+    static immutable ubyte[] decode = cast(immutable(ubyte)[]) import("cp" ~ toChars(n) ~ ".bin");
+    static immutable ubyte[] encode = cast(immutable(ubyte)[]) import("cp" ~ toChars(n) ~ "-encode.bin");
+    static immutable ubyte[256] leads = leadNumbers(decode);
+}
+
+/// For each byte, the number + 1 of its table in `decode` if it is a lead byte, else 0.
+private ubyte[256] leadNumbers(scope const(ubyte)[] decode) @safe pure nothrow
+{
+    ubyte[256] leads;
+    size_t count;
+    foreach (b; 0 .. 256)
+        if (decode[2 * b] == 0xFF && decode[2 * b + 1] == 0xFF)
+        {
+            count++;
+            leads[b] = cast(ubyte) count;
+        }
+    return leads;
 }
 
 /// Sorted (character << 8 | byte) pairs of the upper half of code page `n`, built at compile time.
@@ -274,8 +409,8 @@ private uint[128] build(const wchar[128] high) @safe pure nothrow
     {
         const cp = CodePage.get(n);
         assert(cp.number == n);
-        if (cp.isUtf8)
-            continue;
+        if (cp.isUtf8 || cp.isDoubleByte)
+            continue; // double-byte pages: tested below
         foreach (b; 0 .. 256)
         {
             const ubyte[1] one = [cast(ubyte) b];
@@ -307,4 +442,35 @@ private string toChars(uint n) @safe pure nothrow
     }
     while (n != 0);
     return s;
+}
+
+@safe unittest
+{
+    // the double-byte pages: every encodable character goes back and forth, and Windows' decoding rules
+    foreach (n; doubleBytePages)
+    {
+        const cp = CodePage.get(n);
+        assert(cp.isDoubleByte && !cp.isUtf8);
+        const pairs = cp.dbcsEncode;
+        for (size_t i = 0; i < pairs.length; i += 4)
+        {
+            const c = cast(dchar)(pairs[i] | (pairs[i + 1] << 8));
+            const b = pairs[i + 2] | (pairs[i + 3] << 8);
+            ubyte[] bytes = b < 0x100 ? [cast(ubyte) b] : [cast(ubyte)(b >> 8), cast(ubyte) b];
+            char[] utf8;
+            appendUtf8(utf8, c);
+            assert(cp.decode(bytes) == utf8, "decode");
+            assert(cp.encode(utf8) == bytes, "encode");
+        }
+    }
+    const korean = CodePage.get(949);
+    assert(korean.decode([0xC7, 0xD1, 0xB1, 0xB9, 0xBE, 0xEE]) == "한국어");
+    assert(CodePage.get(936).decode([0xD6, 0xD0, 0xCE, 0xC4]) == "中文");
+    assert(CodePage.get(950).decode([0xA4, 0xA4, 0xA4, 0xE5]) == "中文");
+    const japanese = CodePage.get(932);
+    assert(japanese.decode([0x41, 0x81]) == "A"); // a lead byte at the end is dropped
+    assert(japanese.decode([0x81, 0x00, 0x42]) == "\u30FB\0B"); // before 0x00: the default character, then 0x00
+    assert(japanese.decode([0x81, 0x20]) == "\u30FB"); // an invalid pair
+    assert(korean.decode([0x81, 0x20]) == "?");
+    assert(japanese.encode("A😀", '?') == "A?");
 }

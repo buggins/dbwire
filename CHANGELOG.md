@@ -4,6 +4,19 @@ All notable changes to dbwire are documented here. The format follows
 [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and the project uses
 [semantic versioning](https://semver.org/).
 
+## 0.4.0 — 2026-11-02
+
+### Added
+
+- `dbwire:charset`: the double-byte code pages of SQL Server collations (#24):
+  932 (Japanese), 936 (Simplified Chinese), 949 (Korean), 950 (Traditional
+  Chinese). Decoding follows Windows' rules (an invalid pair gives the page's
+  default character, a lead byte at the end is dropped); encoding writes the
+  byte sequences Windows chooses, and only for characters that decode back.
+  `CodePage.bytesOf` gives a character's one or two bytes; `isDoubleByte`.
+  The tables were produced by SQL Server converting every byte pair and every
+  character (`charset/tables/README.md`); they are read with string imports.
+
 ## 0.3.0 — 2026-11-02
 
 ### Added
