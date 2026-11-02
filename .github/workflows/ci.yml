@@ -55,6 +55,11 @@ jobs:
             dub test ":$p"
             echo "::endgroup::"
           done
+      - name: Fiber-mode tests (vibe-core 2.x)
+        run: dub run --root=tests-vibe
+      - name: Fiber-mode tests (vibe-core 1.x)
+        if: matrix.os == 'ubuntu-latest' && matrix.dc == 'ldc-latest'
+        run: dub run --root=tests-vibe1
 
   lint:
     runs-on: ubuntu-latest

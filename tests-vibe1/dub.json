@@ -1,0 +1,13 @@
+{
+    "name": "dbwire-tests-vibe1",
+    "description": "Runs the dbwire fiber-mode tests against vibe-core 1.x, the oldest supported vibe-core",
+    "license": "BSL-1.0",
+    "targetType": "executable",
+    "targetName": "tests-vibe1",
+    "sourcePaths": ["../tests-vibe/source"],
+    "importPaths": ["../tests-vibe/source"],
+    "dependencies": {
+        "dbwire:io": { "path": "../" },
+        "vibe-core": "1.22.6"
+    }
+}

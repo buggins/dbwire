@@ -31,3 +31,5 @@ dub.selections.json
 # Test executables
 /dbwire-test-*
 /*/dbwire-*-test-*
+/tests-vibe/tests-vibe
+/tests-vibe1/tests-vibe1

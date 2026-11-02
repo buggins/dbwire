@@ -43,12 +43,20 @@ dub.json                    root package "dbwire": source/dbwire/package.d (publ
                             depends on every subpackage; buildType "docs"
 types/   dbwire:types       source/dbwire/exception.d, source/dbwire/types/{decimal,wideint,interval,timezone}.d
                                                                                     no dependencies
-io/      dbwire:io          source/dbwire/io/                                       types, vibe-core (optional)
+io/      dbwire:io          source/dbwire/io/{transport,backend,phobos,vibecore,buffer,mock}.d
+                                                                                    types, vibe-core (optional)
 tls/     dbwire:tls         source/dbwire/tls/                                      io
 crypto/  dbwire:crypto      source/dbwire/crypto/                                   types
 charset/ dbwire:charset     source/dbwire/charset/                                  types
 client/  dbwire:client      source/dbwire/client/                                   io
+tests-vibe/                 fiber-mode tests (vibe-core 2.x): a standalone package, run with --root
+tests-vibe1/                the same sources against vibe-core 1.22.6
 ```
+
+Notes on `dbwire:io`:
+- `BufferedReader`/`BufferedWriter` members must not use the names of connectors' protocol functions (clickhoused's `readString()`, `readBytes()`, `readUVarInt()`, `writeString()`, `writeUVarInt()`): connectors define those as free functions called with UFCS, and D ignores a UFCS function when a member of the same name exists. Hence `readExactString`/`readExactBytes`.
+- `readByte`/`writeByte` are templates (`()()`) so that they are inlined into other packages' protocol code.
+- The vibe runners test `vibecore.d`, which unit tests can't reach (vibe-core isn't a dependency of `dub test :io`). Their test servers run on a plain thread with blocking sockets, so they don't depend on vibe's listen API (different in 1.x and 2.x). vibe-core 2.x starts a new task immediately (`runTask` runs it until its first yield).
 
 Each subpackage has its own `dub.json` in its directory, listed in the root `subPackages` array; sibling dependencies are written `"dbwire:types": "*"`. Module names `dbwire.<area>.<name>`, each area with a `package.d` of public imports.
 
@@ -60,6 +68,8 @@ The recipe format is **`dub.json`** (never `dub.sdl` or `package.json`).
 dub build                         # everything
 dub test                          # root package unit tests
 dub test :types                   # one subpackage (types, io, tls, crypto, charset, client)
+dub run --root=tests-vibe         # fiber-mode tests, vibe-core 2.x (downloads vibe-core on first run)
+dub run --root=tests-vibe1        # the same with vibe-core 1.22.6
 dub run dscanner@0.15.2 -- --styleCheck .                 # lint (CI fails on any warning)
 dub run dfmt@0.15.2 -- --inplace $(git ls-files '*.d')    # format (CI fails if this changes files)
 dub build -b docs                                         # docs into /docs/ (git-ignored)
@@ -67,7 +77,7 @@ dub build -b docs                                         # docs into /docs/ (gi
 
 Run lint and format before committing D code. dfmt 0.15.2 mangles lambdas with attributes (`() nothrow {` becomes `() nothrow{`): use named nested functions. It merges `@safe return` into `@safereturn`: avoid the `return` attribute. Run dfmt twice when it changes files.
 
-`dub.selections.json` files are git-ignored: a root one listing vibe-core would silently enable vibe support.
+`dub.selections.json` files are git-ignored: a root one listing vibe-core would silently enable vibe support. The vibe runners are standalone packages run with `--root`, so their selections stay in their own directories.
 
 ## Local environment
 
