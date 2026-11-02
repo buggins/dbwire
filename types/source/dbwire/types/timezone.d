@@ -12,12 +12,14 @@ import std.typecons : Rebindable;
 /++
 Returns the time zone named `name` (an IANA name such as `"Europe/Lisbon"`), or
 UTC if `name` is empty or cannot be resolved. Results are cached per thread.
+(A template, so that the cache check is inlined into callers in other packages,
+which call it for every value of a date-time column.)
 
 Zones come from the system's tz database (`PosixTimeZone`). Windows has none:
 there every name resolves to UTC, so points in time stay correct and only their
 presentation (the local time) differs.
 +/
-immutable(TimeZone) resolveTimeZone(string name) @safe
+immutable(TimeZone) resolveTimeZone()(string name) @safe
 {
     if (name.length == 0 || name == "UTC")
         return UTC();
