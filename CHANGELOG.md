@@ -35,6 +35,17 @@ All notable changes to dbwire are documented here. The format follows
   - `MockTransport` for tests;
   - fiber-mode test runners `tests-vibe` (vibe-core 2.x) and `tests-vibe1`
     (vibe-core 1.22.6), run by CI.
+  - fixed on the way: `VibeTransport.dataAvailable` lost received data on
+    Windows (eventcore's WinAPI driver drops the data of an immediate read that
+    completes at once); it now checks vibe's buffer and the socket without
+    reading. clickhoused 0.6 and older have this bug in fiber mode on Windows.
+- `dbwire:tls` (#5), from clickhoused: the run-time OpenSSL 1.1.1/3.x loader
+  (`loadOpenSsl`, `openSslLibrary`), `TlsOptions`, `TlsContext` (cached client
+  contexts, Windows ROOT store import) and `TlsTransport` (one decorator over
+  memory BIOs for thread and fiber mode, concurrent reader and writer). New
+  test certificates (`make-test-certs.sh`); the test switches are now
+  `DBWIRE_REQUIRE_OPENSSL` and `DBWIRE_TLS_PUBLIC_HOST`. The vibe runners also
+  check TLS in fiber mode against `DBWIRE_TLS_PUBLIC_HOST`.
 - Repository scaffold (#2): the root package and the subpackages `dbwire:types`,
   `dbwire:io`, `dbwire:tls`, `dbwire:crypto`, `dbwire:charset` and
   `dbwire:client` (still empty), CI on Linux, Windows and macOS with DMD and

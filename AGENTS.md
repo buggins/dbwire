@@ -45,7 +45,8 @@ types/   dbwire:types       source/dbwire/exception.d, source/dbwire/types/{deci
                                                                                     no dependencies
 io/      dbwire:io          source/dbwire/io/{transport,backend,phobos,vibecore,buffer,mock}.d
                                                                                     types, vibe-core (optional)
-tls/     dbwire:tls         source/dbwire/tls/                                      io
+tls/     dbwire:tls         source/dbwire/tls/{openssl,transport}.d, testdata/ (certificates, make-test-certs.sh)
+                                                                                    io; libs-windows: crypt32
 crypto/  dbwire:crypto      source/dbwire/crypto/                                   types
 charset/ dbwire:charset     source/dbwire/charset/                                  types
 client/  dbwire:client      source/dbwire/client/                                   io
@@ -53,9 +54,17 @@ tests-vibe/                 fiber-mode tests (vibe-core 2.x): a standalone packa
 tests-vibe1/                the same sources against vibe-core 1.22.6
 ```
 
+Notes on `dbwire:tls`:
+- OpenSSL is loaded at run time (`dbwire.tls.openssl`, our own declarations of the few functions used); `TlsContext.client` fails with a `ClientException` when it can't be loaded or a certificate file is unusable, handshake and verification failures are `ConnectionException`s.
+- Server-side TLS (`TlsTransport.accept`, server contexts) is `package`: only the unit tests use it.
+- Test switches: `DBWIRE_REQUIRE_OPENSSL=1` turns "OpenSSL not found" from a skip into a failure; `DBWIRE_TLS_PUBLIC_HOST=github.com:443` verifies a public server with the system trust store (unit tests and the vibe runners; needs the internet). CI sets both on every OS.
+- Trusted CAs without `caFile`: OpenSSL's default paths, plus the Windows `ROOT` store imported through crypt32. macOS needs Homebrew's `openssl@3` (the system LibreSSL is not used). On Windows, closing a socket with unread data resets the connection, which can discard data in transit (a close_notify included).
+- Regenerate the test certificates with `sh make-test-certs.sh` in `tls/source/dbwire/tls/testdata` (test-only keys, committed on purpose).
+
 Notes on `dbwire:io`:
 - `BufferedReader`/`BufferedWriter` members must not use the names of connectors' protocol functions (clickhoused's `readString()`, `readBytes()`, `readUVarInt()`, `writeString()`, `writeUVarInt()`): connectors define those as free functions called with UFCS, and D ignores a UFCS function when a member of the same name exists. Hence `readExactString`/`readExactBytes`.
 - `readByte`/`writeByte` are templates (`()()`) so that they are inlined into other packages' protocol code.
+- On Windows, `VibeTransport.dataAvailable` must not call `dataAvailableForRead`: eventcore's WinAPI driver (0.9.x) loses the data of an immediate read that completes at once. It checks `peek()` and the socket with `select()` instead.
 - The vibe runners test `vibecore.d`, which unit tests can't reach (vibe-core isn't a dependency of `dub test :io`). Their test servers run on a plain thread with blocking sockets, so they don't depend on vibe's listen API (different in 1.x and 2.x). vibe-core 2.x starts a new task immediately (`runTask` runs it until its first yield).
 
 Each subpackage has its own `dub.json` in its directory, listed in the root `subPackages` array; sibling dependencies are written `"dbwire:types": "*"`. Module names `dbwire.<area>.<name>`, each area with a `package.d` of public imports.
@@ -69,6 +78,7 @@ dub build                         # everything
 dub test                          # root package unit tests
 dub test :types                   # one subpackage (types, io, tls, crypto, charset, client)
 dub run --root=tests-vibe         # fiber-mode tests, vibe-core 2.x (downloads vibe-core on first run)
+DBWIRE_REQUIRE_OPENSSL=1 DBWIRE_TLS_PUBLIC_HOST=github.com:443 dub test :tls   # TLS tests as CI runs them
 dub run --root=tests-vibe1        # the same with vibe-core 1.22.6
 dub run dscanner@0.15.2 -- --styleCheck .                 # lint (CI fails on any warning)
 dub run dfmt@0.15.2 -- --inplace $(git ls-files '*.d')    # format (CI fails if this changes files)

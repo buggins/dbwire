@@ -4,10 +4,19 @@
     "license": "BSL-1.0",
     "targetType": "executable",
     "targetName": "tests-vibe1",
-    "sourcePaths": ["../tests-vibe/source"],
-    "importPaths": ["../tests-vibe/source"],
+    "sourcePaths": [
+        "../tests-vibe/source"
+    ],
+    "importPaths": [
+        "../tests-vibe/source"
+    ],
     "dependencies": {
-        "dbwire:io": { "path": "../" },
+        "dbwire:io": {
+            "path": "../"
+        },
+        "dbwire:tls": {
+            "path": "../"
+        },
         "vibe-core": "1.22.6"
     }
 }

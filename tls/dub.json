@@ -8,5 +8,8 @@
     },
     "dependencies": {
         "dbwire:io": "*"
-    }
+    },
+    "libs-windows": [
+        "crypt32"
+    ]
 }
