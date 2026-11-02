@@ -4,6 +4,18 @@ All notable changes to dbwire are documented here. The format follows
 [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and the project uses
 [semantic versioning](https://semver.org/).
 
+## 0.1.1 — 2026-11-02
+
+### Changed
+
+- Faster when used from other packages (#20): the small hot methods of
+  `BufferedReader`/`BufferedWriter` (`window`, `consume`, `readExactString`,
+  `readExactBytes`, `reserve`, `commit`, `writeBytes`), `StringArena.take` and
+  `resolveTimeZone` are now templates, so they are inlined into the calling
+  package (LDC doesn't inline ordinary functions across separately compiled
+  packages). Call syntax is unchanged. Found by clickhoused's benchmarks:
+  decoding and encoding strings was about 5–8% slower than with its own buffer.
+
 ## 0.1.0 — 2026-11-02
 
 First release: the building blocks extracted from clickhoused (`dbwire:types`,

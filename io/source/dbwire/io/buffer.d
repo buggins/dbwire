@@ -47,7 +47,7 @@ struct StringArena
     private size_t used;
 
     /// A fresh region of `length` bytes, to be filled by the caller.
-    ubyte[] take(size_t length) @safe pure nothrow
+    ubyte[] take()(size_t length) @safe pure nothrow
     {
         import std.array : uninitializedArray;
 
@@ -181,7 +181,7 @@ final class BufferedReader
     Throws: `ProtocolException` if `length` exceeds `maxStringLength`;
     `ConnectionException` if the stream ends first.
     +/
-    immutable(ubyte)[] readExactBytes(size_t length) @safe
+    immutable(ubyte)[] readExactBytes()(size_t length) @safe
     {
         checkLength(length);
         auto data = new ubyte[length];
@@ -195,7 +195,7 @@ final class BufferedReader
     Throws: `ProtocolException` if `length` exceeds `maxStringLength`;
     `ConnectionException` if the stream ends first.
     +/
-    string readExactString(size_t length) @safe
+    string readExactString()(size_t length) @safe
     {
         return cast(string) readExactBytes(length);
     }
@@ -208,7 +208,7 @@ final class BufferedReader
     Throws: `ProtocolException` if `length` exceeds `maxStringLength`;
     `ConnectionException` if the stream ends first.
     +/
-    string readExactString(size_t length, ref StringArena arena) @safe
+    string readExactString()(size_t length, ref StringArena arena) @safe
     {
         checkLength(length);
         auto bytes = arena.take(length);
@@ -241,19 +241,19 @@ final class BufferedReader
     }
 
     /// The bytes buffered so far, without reading from the transport (may be empty).
-    const(ubyte)[] window() const @safe pure nothrow @nogc
+    const(ubyte)[] window()() const @safe pure nothrow @nogc
     {
         return buffer[pos .. end];
     }
 
     /// Consumes `n` buffered bytes (at most `buffered`).
-    void consume(size_t n) @safe pure nothrow @nogc
+    void consume()(size_t n) @safe pure nothrow @nogc
     {
         assert(n <= end - pos, "BufferedReader.consume: more than is buffered");
         pos += n;
     }
 
-    private void checkLength(size_t length) const @safe
+    private void checkLength()(size_t length) const @safe
     {
         if (length > maxStringLength)
             throw new ProtocolException("String length exceeds the limit");
@@ -303,7 +303,7 @@ final class BufferedWriter
     }
 
     /// Appends raw bytes.
-    void writeBytes(scope const(ubyte)[] data) @safe
+    void writeBytes()(scope const(ubyte)[] data) @safe
     {
         if (data.length > buffer.length - used)
         {
@@ -345,7 +345,7 @@ final class BufferedWriter
     for the caller to fill; then `commit` the bytes actually written. `n` must
     not exceed `capacity`.
     +/
-    ubyte[] reserve(size_t n) @safe
+    ubyte[] reserve()(size_t n) @safe
     {
         assert(n <= buffer.length, "BufferedWriter.reserve: more than the buffer holds");
         if (buffer.length - used < n)
@@ -354,7 +354,7 @@ final class BufferedWriter
     }
 
     /// Adds `n` bytes written into the space returned by `reserve`.
-    void commit(size_t n) @safe pure nothrow @nogc
+    void commit()(size_t n) @safe pure nothrow @nogc
     {
         assert(n <= buffer.length - used, "BufferedWriter.commit: more than was reserved");
         used += n;
