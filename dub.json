@@ -1,0 +1,41 @@
+{
+    "name": "dbwire",
+    "description": "Shared building blocks for native D database connectors: value types, thread/fiber transports, TLS, cryptography, character sets, connection pools",
+    "authors": [
+        "Vadim Lopatin"
+    ],
+    "copyright": "Copyright © 2026, Vadim Lopatin",
+    "license": "BSL-1.0",
+    "homepage": "https://github.com/buggins/dbwire",
+    "targetType": "library",
+    "toolchainRequirements": {
+        "frontend": ">=2.097"
+    },
+    "dependencies": {
+        "dbwire:types": "*",
+        "dbwire:io": "*",
+        "dbwire:tls": "*",
+        "dbwire:crypto": "*",
+        "dbwire:charset": "*",
+        "dbwire:client": "*"
+    },
+    "subPackages": [
+        "./types",
+        "./io",
+        "./tls",
+        "./crypto",
+        "./charset",
+        "./client"
+    ],
+    "buildTypes": {
+        "docs": {
+            "buildOptions": [
+                "syntaxOnly"
+            ],
+            "dflags": [
+                "-Dddocs",
+                "-oq"
+            ]
+        }
+    }
+}

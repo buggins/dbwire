@@ -1,0 +1,12 @@
+{
+    "name": "client",
+    "description": "Connection plumbing for database connectors: connection strings, host failover, connection pool core",
+    "license": "BSL-1.0",
+    "targetType": "library",
+    "toolchainRequirements": {
+        "frontend": ">=2.097"
+    },
+    "dependencies": {
+        "dbwire:io": "*"
+    }
+}

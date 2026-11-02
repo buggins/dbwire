@@ -1,0 +1,9 @@
+{
+    "name": "types",
+    "description": "Common value types for database connectors: exceptions, exact decimals, 128/256-bit integers, intervals, time zones",
+    "license": "BSL-1.0",
+    "targetType": "library",
+    "toolchainRequirements": {
+        "frontend": ">=2.097"
+    }
+}
