@@ -6,6 +6,9 @@
     "toolchainRequirements": {
         "frontend": ">=2.097"
     },
+    "libs-windows": [
+        "bcrypt"
+    ],
     "dependencies": {
         "dbwire:types": "*"
     }
