@@ -27,3 +27,7 @@ openssl x509 -req -in client.csr -CA ca.pem -CAkey ca.key -CAcreateserial -sha25
 
 # Test servers in containers may read the keys as another user
 chmod 644 server.key client.key
+
+# The client key encrypted (PKCS#8, as in an Oracle ewallet.pem), password "dbwire-test"
+openssl pkcs8 -topk8 -in client.key -out client-encrypted.key -v2 aes-256-cbc -passout pass:dbwire-test
+chmod 644 client-encrypted.key

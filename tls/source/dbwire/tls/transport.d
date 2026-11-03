@@ -43,8 +43,15 @@ struct TlsOptions
     string certFile;
     /// PEM file with the client certificate's private key. Empty: taken from `certFile`.
     string keyFile;
+    /// Password of an encrypted private key (`ENCRYPTED PRIVATE KEY`, e.g. in an Oracle wallet).
+    string keyPassword;
     /// Don't verify the server certificate or its name. For development only.
     bool skipVerify;
+    /++
+    Verify the server's certificate chain but not its name. For clients that
+    check the certificate otherwise, e.g. its subject (`TlsTransport.peerSubject`).
+    +/
+    bool skipNameCheck;
     /// Name to send (SNI) and verify instead of the host connected to, e.g. when
     /// connecting through an IP address, a tunnel or a proxy.
     string serverName;
@@ -70,6 +77,7 @@ final class TlsContext
     private const(OpenSslApi)* api;
     private SslCtx* ctx;
     private bool verifyPeer;
+    private const(char)* keyPassword; // a zero-terminated copy, the password callback's user data
     /// Certificates added from the Windows "ROOT" system store (Windows only).
     package size_t windowsRootCertificates;
 
@@ -78,6 +86,7 @@ final class TlsContext
         string caFile;
         string certFile;
         string keyFile;
+        string keyPassword;
         bool skipVerify;
         TlsVersion minVersion;
         TlsVersion maxVersion;
@@ -94,8 +103,8 @@ final class TlsContext
     +/
     static TlsContext client(const TlsOptions options) @safe
     {
-        const key = Key(options.caFile, options.certFile, options.keyFile, options.skipVerify, options.minVersion,
-                options.maxVersion);
+        const key = Key(options.caFile, options.certFile, options.keyFile, options.keyPassword, options.skipVerify,
+                options.minVersion, options.maxVersion);
         synchronized
         {
             if (auto found = cachedContext(key))
@@ -153,6 +162,12 @@ final class TlsContext
         if (options.certFile.length)
         {
             const keyFile = options.keyFile.length ? options.keyFile : options.certFile;
+            if (options.keyPassword.length)
+            {
+                // OpenSSL's default password callback returns its user data as the password
+                keyPassword = options.keyPassword.toStringz;
+                api.sslCtxSetDefaultPasswdCbUserdata(ctx, cast(void*) keyPassword);
+            }
             check(api.sslCtxUseCertificateChainFile(ctx, options.certFile.toStringz),
                     "Cannot load the certificate " ~ options.certFile);
             check(api.sslCtxUsePrivateKeyFile(ctx, keyFile.toStringz, sslFiletypePem),
@@ -236,8 +251,8 @@ final class TlsTransport : Transport
             Duration handshakeTimeout, Transport handshakeTransport = null) @safe
     {
         const name = options.serverName.length ? options.serverName : host;
-        this(raw, backend, context, false, name, !options.skipVerify, options.alpn, handshakeTimeout,
-                handshakeTransport);
+        this(raw, backend, context, false, name, !options.skipVerify && !options.skipNameCheck, options.alpn,
+                handshakeTimeout, handshakeTransport);
     }
 
     /// Accepts a TLS connection as the server (used by the unit tests).
@@ -433,6 +448,36 @@ final class TlsTransport : Transport
         uint length;
         api.sslGet0AlpnSelected(ssl, &data, &length);
         return data is null ? "" : (cast(const(char)[]) data[0 .. length]).idup;
+    }
+
+    /++
+    The subject of the server's certificate as RFC 2253 text, e.g.
+    `CN=db.example.com,O=Example,C=US` (the most specific part first; non-ASCII
+    text in UTF-8); null if the server sent no certificate.
+    +/
+    @property string peerSubject() @trusted
+    {
+        // the chain and its certificates are owned by the SSL object; the memory BIO is freed here
+        sslLock.lock();
+        scope (exit)
+            sslLock.unlock();
+        if (ssl is null)
+            return null;
+        auto chain = api.sslGetPeerCertChain(ssl);
+        if (chain is null || api.skNum(chain) < 1)
+            return null;
+        auto certificate = cast(const(X509)*) api.skValue(chain, 0);
+        auto bio = api.bioNew(api.bioSMem());
+        if (bio is null)
+            return null;
+        scope (exit)
+            api.bioFree(bio);
+        if (api.x509NamePrintEx(bio, api.x509GetSubjectName(certificate), 0, xnFlagRfc2253Utf8) < 0)
+            return null;
+        const pending = api.bioCtrl(bio, bioCtrlPending, 0, null);
+        auto text = new char[pending > 0 ? cast(size_t) pending : 0];
+        const n = text.length ? api.bioRead(bio, text.ptr, cast(int) text.length) : 0;
+        return n > 0 ? cast(string) text[0 .. n] : "";
     }
 
     /// The negotiated protocol, e.g. `"TLSv1.3"`.
@@ -1069,6 +1114,59 @@ unittest
     auto viaIp = connectPair(renamed, "127.0.0.1");
     viaIp.close();
     assert(viaIp.clientError is null, viaIp.clientError.msg);
+}
+
+// The server certificate's subject; chain verification without the name check
+unittest
+{
+    import std.algorithm.searching : canFind;
+
+    if (!haveOpenSsl())
+        return;
+    auto pair = connectPair(trustingOptions());
+    scope (exit)
+        pair.close();
+    assert(pair.clientError is null, pair.clientError.msg);
+    assert(pair.client.peerSubject == "CN=localhost", pair.client.peerSubject);
+
+    auto wrongName = trustingOptions();
+    wrongName.serverName = "wrong.example";
+    wrongName.skipNameCheck = true; // the chain is still verified
+    auto renamed = connectPair(wrongName);
+    renamed.close();
+    assert(renamed.clientError is null, renamed.clientError.msg);
+
+    TlsOptions untrusted;
+    untrusted.caFile = testFile("other-ca.pem");
+    untrusted.skipNameCheck = true;
+    auto unknownCa = connectPair(untrusted);
+    unknownCa.close();
+    assert(cast(ConnectionException) unknownCa.clientError !is null);
+    assert(unknownCa.clientError.msg.canFind("verification failed"), unknownCa.clientError.msg);
+}
+
+// An encrypted private key with its password
+unittest
+{
+    if (!haveOpenSsl())
+        return;
+    auto options = trustingOptions();
+    options.certFile = testFile("client.pem");
+    options.keyFile = testFile("client-encrypted.key");
+    options.keyPassword = "dbwire-test";
+    auto pair = connectPair(options, "localhost", serverContext(true));
+    scope (exit)
+        pair.close();
+    assert(pair.clientError is null, pair.clientError.msg);
+    assert(pair.serverError is null, pair.serverError.msg);
+
+    options.keyPassword = "wrong";
+    bool refused;
+    try
+        new TlsContext(options, false);
+    catch (ClientException e)
+        refused = true;
+    assert(refused, "a wrong key password");
 }
 
 // Client certificates (mutual TLS)

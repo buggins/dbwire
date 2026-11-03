@@ -39,6 +39,8 @@ package struct X509;
 package struct X509Store;
 package struct X509VerifyParam;
 package struct SslCipher;
+package struct X509Name;
+package struct OpenSslStack;
 
 // Constants from the OpenSSL headers (identical in 1.1.1 and 3.x)
 package enum : int
@@ -70,6 +72,12 @@ package enum int sslTlsextErrNoAck = 3;
 package enum int bioCtrlPending = 10; // BIO_pending is BIO_ctrl(10)
 package enum c_long x509VOk = 0;
 package enum int sslKeyUpdateRequested = 1;
+/++
+`X509_NAME_print_ex` flags: `XN_FLAG_RFC2253` (RFC 2253 escaping, comma
+separators, last RDN first, short names, unknown fields dumped) without
+`ASN1_STRFLGS_ESC_MSB`, so that non-ASCII text stays UTF-8.
++/
+package enum c_ulong xnFlagRfc2253Utf8 = 0x0111_0313;
 
 /// Name of the libssl function a field of `OpenSslApi` is bound to.
 private struct LibSsl
@@ -105,6 +113,11 @@ extern (C) nothrow @nogc:
     @LibCrypto("d2i_X509") X509* function(X509** a, const(ubyte)** pp, c_long length) d2iX509;
     @LibCrypto("X509_free") void function(X509* a) x509Free;
     @LibCrypto("X509_STORE_add_cert") int function(X509Store* ctx, X509* x) x509StoreAddCert;
+    @LibCrypto("X509_get_subject_name") X509Name* function(const(X509)* x) x509GetSubjectName;
+    @LibCrypto("X509_NAME_print_ex")
+    int function(Bio* output, const(X509Name)* name, int indent, c_ulong flags) x509NamePrintEx;
+    @LibCrypto("OPENSSL_sk_num") int function(const(OpenSslStack)* st) skNum;
+    @LibCrypto("OPENSSL_sk_value") void* function(const(OpenSslStack)* st, int i) skValue;
 
     // libssl
     @LibSsl("TLS_client_method") const(SslMethod)* function() tlsClientMethod;
@@ -121,6 +134,11 @@ extern (C) nothrow @nogc:
     @LibSsl("SSL_CTX_use_PrivateKey_file")
     int function(SslCtx* ctx, const(char)* file, int type) sslCtxUsePrivateKeyFile;
     @LibSsl("SSL_CTX_check_private_key") int function(const(SslCtx)* ctx) sslCtxCheckPrivateKey;
+    @LibSsl("SSL_CTX_set_default_passwd_cb_userdata")
+    void function(SslCtx* ctx, void* userdata) sslCtxSetDefaultPasswdCbUserdata;
+    // the peer certificate is the chain's first entry on the client side (SSL_get_peer_certificate
+    // was renamed SSL_get1_peer_certificate in OpenSSL 3.0, and every symbol here must exist in both)
+    @LibSsl("SSL_get_peer_cert_chain") OpenSslStack* function(const(Ssl)* s) sslGetPeerCertChain;
     @LibSsl("SSL_CTX_get_cert_store") X509Store* function(const(SslCtx)* ctx) sslCtxGetCertStore;
     @LibSsl("SSL_new") Ssl* function(SslCtx* ctx) sslNew;
     @LibSsl("SSL_free") void function(Ssl* ssl) sslFree;
