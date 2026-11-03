@@ -4,6 +4,15 @@ All notable changes to dbwire are documented here. The format follows
 [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and the project uses
 [semantic versioning](https://semver.org/).
 
+## 0.5.1 — unreleased
+
+### Fixed
+
+- `dbwire:crypto` on Windows with DMD: `randomBytes` failed to link
+  (`BCryptGenRandom` unresolved) in applications using dbwire as a dependency.
+  DMD splits library modules into one object per function, which loses the
+  `pragma(lib, "bcrypt")` directive; the package now links `bcrypt` itself.
+
 ## 0.5.0 — 2026-11-02
 
 ### Added
