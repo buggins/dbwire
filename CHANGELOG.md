@@ -4,6 +4,17 @@ All notable changes to dbwire are documented here. The format follows
 [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and the project uses
 [semantic versioning](https://semver.org/).
 
+## Unreleased
+
+### Added
+
+- `dbwire:tls` (#29): `TlsOptions.keyPassword` for encrypted private keys
+  (`ENCRYPTED PRIVATE KEY`, e.g. in an Oracle `ewallet.pem`);
+  `TlsOptions.skipNameCheck` verifies the certificate chain but not the
+  server name, for clients that check the certificate otherwise;
+  `TlsTransport.peerSubject` gives the server certificate's subject as
+  RFC 2253 text.
+
 ## 0.5.1 — unreleased
 
 ### Fixed
