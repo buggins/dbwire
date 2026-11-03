@@ -4,7 +4,7 @@ All notable changes to dbwire are documented here. The format follows
 [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and the project uses
 [semantic versioning](https://semver.org/).
 
-## Unreleased
+## 0.6.0 — 2026-11-03
 
 ### Added
 
@@ -15,7 +15,7 @@ All notable changes to dbwire are documented here. The format follows
   `TlsTransport.peerSubject` gives the server certificate's subject as
   RFC 2253 text.
 
-## 0.5.1 — unreleased
+## 0.5.1 — 2026-11-03
 
 ### Fixed
 
