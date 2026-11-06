@@ -55,6 +55,31 @@ interface Transport
 }
 
 /++
+A transport that can wait for data from the server, with a time limit,
+without reading it (e.g. for notifications that arrive while a connection is
+idle). Implemented by the Phobos, vibe.d, TLS and mock transports; use
+`dbwire.io.backend.waitForData`, which falls back to polling for other
+transports.
++/
+interface WaitableTransport
+{
+    /++
+    Whether `waitForData` can wait: false, e.g., for a TLS stream over a
+    transport that can't.
+    +/
+    @property bool canWaitForData() @safe;
+
+    /++
+    Waits until data from the server can be read without blocking (or the
+    server closed the stream), up to `timeout` (`Duration.max`: without limit).
+
+    Returns: true when data can be read, false on timeout.
+    Throws: `dbwire.exception.ConnectionException` on network errors.
+    +/
+    bool waitForData(Duration timeout) @safe;
+}
+
+/++
 Opens a new transport to `host`:`port`, giving up after `connectTimeout`.
 
 Connectors accept one in their connection options to replace the I/O

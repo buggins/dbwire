@@ -27,10 +27,10 @@ import vibe.core.task : InterruptException;
 
 import dbwire.exception : ClientException, ConnectionException;
 import dbwire.io.backend : IoBackend, IoLock, PoolSync;
-import dbwire.io.transport : Transport;
+import dbwire.io.transport : Transport, WaitableTransport;
 
 /// `Transport` over a vibe-core `TCPConnection`.
-final class VibeTransport : Transport
+final class VibeTransport : Transport, WaitableTransport
 {
     private TCPConnection connection;
     private Thread owner;
@@ -91,6 +91,33 @@ final class VibeTransport : Transport
         }
         catch (Exception e)
             throw new ConnectionException("Socket check failed: " ~ e.msg);
+    }
+
+    /// vibe-core connections can wait (`waitForDataEx`): the task is suspended meanwhile.
+    @property bool canWaitForData() @safe
+    {
+        return true;
+    }
+
+    /// Waits until data can be read or the stream ended, suspending the task.
+    bool waitForData(Duration timeout) @safe
+    {
+        checkThread();
+        try
+        {
+            final switch (connection.waitForDataEx(timeout))
+            {
+            case WaitForDataStatus.dataAvailable:
+            case WaitForDataStatus.noMoreData:
+                return true;
+            case WaitForDataStatus.timeout:
+                return false;
+            }
+        }
+        catch (InterruptException e)
+            throw e; // Task.interrupt(): propagate as is
+        catch (Exception e)
+            throw new ConnectionException("Socket wait failed: " ~ e.msg);
     }
 
     override void close() @safe nothrow

@@ -112,6 +112,7 @@ extern (C) nothrow @nogc:
     int function(X509VerifyParam* param, const(char)* ipasc) x509VerifyParamSet1IpAsc;
     @LibCrypto("d2i_X509") X509* function(X509** a, const(ubyte)** pp, c_long length) d2iX509;
     @LibCrypto("X509_free") void function(X509* a) x509Free;
+    @LibCrypto("i2d_X509") int function(const(X509)* a, ubyte** output) i2dX509;
     @LibCrypto("X509_STORE_add_cert") int function(X509Store* ctx, X509* x) x509StoreAddCert;
     @LibCrypto("X509_get_subject_name") X509Name* function(const(X509)* x) x509GetSubjectName;
     @LibCrypto("X509_NAME_print_ex")

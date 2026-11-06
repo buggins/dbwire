@@ -11,10 +11,10 @@ import std.socket;
 
 import dbwire.exception : ConnectionException;
 import dbwire.io.backend : IoBackend, IoLock, PoolSync;
-import dbwire.io.transport : Transport;
+import dbwire.io.transport : Transport, WaitableTransport;
 
 /// `Transport` over a connected, blocking `std.socket.Socket`.
-final class PhobosTransport : Transport
+final class PhobosTransport : Transport, WaitableTransport
 {
     private Socket socket;
 
@@ -58,6 +58,36 @@ final class PhobosTransport : Transport
             return Socket.select(readable, null, null, Duration.zero) > 0;
         catch (SocketException e)
             throw new ConnectionException("Socket select failed: " ~ e.msg);
+    }
+
+    /// Phobos sockets can wait (`select`).
+    @property bool canWaitForData() @safe
+    {
+        return true;
+    }
+
+    /// Waits with `select` until the socket is readable (data or the end of the stream).
+    bool waitForData(Duration timeout) @safe
+    {
+        auto readable = new SocketSet;
+        for (;;)
+        {
+            readable.reset();
+            readable.add(socket);
+            try
+            {
+                int n;
+                if (timeout == Duration.max)
+                    n = Socket.select(readable, null, null);
+                else
+                    n = Socket.select(readable, null, null, timeout);
+                if (n >= 0)
+                    return n > 0;
+                // -1: interrupted by a signal; wait again (with the whole timeout: rare)
+            }
+            catch (SocketException e)
+                throw new ConnectionException("Socket select failed: " ~ e.msg);
+        }
     }
 
     override void close() @safe nothrow
@@ -296,6 +326,22 @@ private string portString(ushort port) @safe pure
     assert(received == [1, 2, 3]);
 
     assert(!client.dataAvailable);
+    // waiting: a timeout without data, then data sent from another thread
+    {
+        import core.thread : Thread;
+        import core.time : MonoTime, msecs;
+
+        auto waitable = cast(WaitableTransport) client;
+        const start = MonoTime.currTime;
+        assert(!waitable.waitForData(50.msecs) && MonoTime.currTime - start >= 40.msecs);
+        static immutable ubyte[1] nineByte = [9];
+        auto sender = new Thread(() @trusted { Thread.sleep(50.msecs); server.send(nineByte[]); }); // a helper thread
+        (() @trusted => sender.start())();
+        assert(waitable.waitForData(Duration.max));
+        (() @trusted => sender.join())();
+        auto nine = new ubyte[1];
+        assert(client.read(nine) == 1 && nine[0] == 9);
+    }
     server.send([7]);
     auto reply = new ubyte[1];
     while (!client.dataAvailable)

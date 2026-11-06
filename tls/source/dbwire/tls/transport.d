@@ -23,7 +23,7 @@ import core.time : Duration;
 import dbwire.exception : ClientException, ConnectionException;
 import dbwire.io.backend : IoBackend, IoLock;
 import dbwire.tls.openssl;
-import dbwire.io.transport : Transport;
+import dbwire.io.transport : Transport, WaitableTransport;
 
 /// TLS protocol versions (`TlsOptions.minVersion`). TLS 1.0 and 1.1 are not supported.
 enum TlsVersion
@@ -205,7 +205,7 @@ data (`handshakeTransport`, e.g. an adapter that wraps the handshake records
 in the protocol's packets), and `detach` ends TLS while the connection goes on
 unencrypted.
 +/
-final class TlsTransport : Transport
+final class TlsTransport : Transport, WaitableTransport
 {
     private enum size_t writeChunk = 64 * 1024;
 
@@ -372,6 +372,45 @@ final class TlsTransport : Transport
         return false;
     }
 
+    /// Whether `waitForData` can wait: when the raw transport can.
+    @property bool canWaitForData() @safe
+    {
+        auto waitable = cast(WaitableTransport) raw;
+        return waitable !is null && waitable.canWaitForData;
+    }
+
+    /++
+    Waits until application data can be read (or the stream ended), up to
+    `timeout`: TLS records without application data (session tickets, key
+    updates) are processed and don't end the wait.
+
+    Throws: `ClientException` if the raw transport can't wait (see
+    `canWaitForData`); `ConnectionException` on network or TLS errors.
+    +/
+    bool waitForData(Duration timeout) @safe
+    {
+        import core.time : MonoTime;
+        import dbwire.exception : ClientException;
+
+        if (dataAvailable())
+            return true;
+        auto waitable = cast(WaitableTransport) raw;
+        if (waitable is null || !waitable.canWaitForData)
+            throw new ClientException("The transport under the TLS stream can't wait for data");
+        const forever = timeout == Duration.max;
+        const deadline = forever ? MonoTime.max : MonoTime.currTime + timeout;
+        for (;;)
+        {
+            const now = MonoTime.currTime;
+            if (!forever && now >= deadline)
+                return false;
+            if (!waitable.waitForData(forever ? Duration.max : deadline - now))
+                return false;
+            if (dataAvailable())
+                return true; // else only records without application data, or part of a record
+        }
+    }
+
     /++
     Closes the TLS connection and the raw transport. If the connection is
     healthy, a close_notify alert is sent first, with a short timeout.
@@ -478,6 +517,33 @@ final class TlsTransport : Transport
         auto text = new char[pending > 0 ? cast(size_t) pending : 0];
         const n = text.length ? api.bioRead(bio, text.ptr, cast(int) text.length) : 0;
         return n > 0 ? cast(string) text[0 .. n] : "";
+    }
+
+    /++
+    The server's certificate (the leaf, not its chain) in DER form, e.g. for
+    SCRAM channel binding (`tls-server-end-point`, RFC 5929), which hashes
+    it; null if the server sent no certificate.
+    +/
+    @property immutable(ubyte)[] peerCertificate() @trusted
+    {
+        // the chain and its certificates are owned by the SSL object; i2d_X509 writes into our buffer
+        sslLock.lock();
+        scope (exit)
+            sslLock.unlock();
+        if (ssl is null)
+            return null;
+        auto chain = api.sslGetPeerCertChain(ssl);
+        if (chain is null || api.skNum(chain) < 1)
+            return null;
+        auto certificate = cast(const(X509)*) api.skValue(chain, 0);
+        const length = api.i2dX509(certificate, null);
+        if (length <= 0)
+            return null;
+        auto der = new ubyte[length];
+        ubyte* output = der.ptr;
+        if (api.i2dX509(certificate, &output) != length)
+            return null;
+        return cast(immutable) der;
     }
 
     /// The negotiated protocol, e.g. `"TLSv1.3"`.
@@ -1116,6 +1182,21 @@ unittest
     assert(viaIp.clientError is null, viaIp.clientError.msg);
 }
 
+// The DER bytes of the first certificate in a PEM file.
+version (unittest) private immutable(ubyte)[] pemCertificate(string file)
+{
+    import std.algorithm.searching : findSplit;
+    import std.base64 : Base64;
+    import std.file : readText;
+    import std.string : lineSplitter, strip;
+
+    const text = readText(file).findSplit("-----BEGIN CERTIFICATE-----")[2].findSplit("-----END CERTIFICATE-----")[0];
+    string base64;
+    foreach (line; text.lineSplitter)
+        base64 ~= line.strip;
+    return Base64.decode(base64).idup;
+}
+
 // The server certificate's subject; chain verification without the name check
 unittest
 {
@@ -1128,6 +1209,8 @@ unittest
         pair.close();
     assert(pair.clientError is null, pair.clientError.msg);
     assert(pair.client.peerSubject == "CN=localhost", pair.client.peerSubject);
+    // the certificate in DER form: the server.pem certificate decoded
+    assert(pair.client.peerCertificate == pemCertificate(testFile("server.pem")), "peerCertificate");
 
     auto wrongName = trustingOptions();
     wrongName.serverName = "wrong.example";
@@ -1264,6 +1347,32 @@ unittest
     // since the reply, which goes with the client's next write
     transfer(pair.server, pair.client, [4, 5, 6, 7]);
     transfer(pair.client, pair.server, [8, 9]);
+}
+
+// waitForData: a timeout when only records without application data arrive (TLS 1.3 session
+// tickets after the handshake), then data written by the server from another thread
+unittest
+{
+    import core.thread : Thread;
+    import core.time : MonoTime, msecs, seconds;
+
+    if (!haveOpenSsl())
+        return;
+    auto pair = connectPair(trustingOptions());
+    scope (exit)
+        pair.close();
+    assert(pair.clientError is null, pair.clientError.msg);
+    assert(pair.client.canWaitForData);
+    const start = MonoTime.currTime;
+    assert(!pair.client.waitForData(150.msecs), "no application data yet");
+    assert(MonoTime.currTime - start >= 140.msecs, "waited for the timeout");
+    auto writer = new Thread({ Thread.sleep(50.msecs); pair.server.write([5]); });
+    writer.start();
+    assert(pair.client.waitForData(5.seconds), "data arrived");
+    writer.join();
+    ubyte[1] received;
+    assert(pair.client.read(received[]) == 1 && received[0] == 5);
+    assert(!pair.client.waitForData(10.msecs), "nothing more");
 }
 
 // One reader and one concurrent writer on each side, with key updates that make
