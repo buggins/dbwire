@@ -58,7 +58,8 @@ final class TzifTimeZone : TimeZone
 
     /++
     Reads a TZif file (versions 1 to 4; the 64-bit data and the footer of
-    version 2+).
+    version 2+). Files with leap seconds (the tz database's `right/` zones)
+    are not supported: `resolveTimeZone` leaves them to `PosixTimeZone`.
 
     Params:
         name = the zone's name, e.g. `Europe/Lisbon`.
@@ -267,6 +268,8 @@ private struct Reader
         if (h.typeCount == 0 || (h.isUtCount != 0 && h.isUtCount != h.typeCount)
                 || (h.isStdCount != 0 && h.isStdCount != h.typeCount))
             throw malformed("invalid counts");
+        if (h.leapCount != 0)
+            throw new ClientException("TZif data with leap seconds (the right/ zones) is not supported");
         return h;
     }
 
@@ -607,5 +610,7 @@ unittest
     header[0 .. 4] = cast(const(ubyte)[]) "TZif";
     assertThrown!ClientException(TzifTimeZone.parse("x", header[])); // no types
     header[39] = 1; // one type, but no data
+    assertThrown!ClientException(TzifTimeZone.parse("x", header[]));
+    header[31] = 1; // a leap second record: not supported
     assertThrown!ClientException(TzifTimeZone.parse("x", header[]));
 }

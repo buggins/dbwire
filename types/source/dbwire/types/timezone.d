@@ -211,6 +211,8 @@ private bool isZoneName(string name) @safe pure nothrow
             catch (Exception)
                 continue;
             const mine = cast(immutable TzifTimeZone) loadTzif(name);
+            if (mine is null && name.length > 6 && name[0 .. 6] == "right/")
+                continue; // leap seconds: left to PosixTimeZone
             assert(mine !is null, name);
             if (mine.lastTransition <= mine.firstTransition)
                 continue; // fixed offset
