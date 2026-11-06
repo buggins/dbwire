@@ -58,6 +58,7 @@ private int runAll()
         Test("round trip and dataAvailable", &testRoundTrip),
         Test("end of stream", &testEndOfStream),
         Test("receive timeout", &testReceiveTimeout),
+        Test("waitForData: timeout, data, other tasks run", &testWaitForData),
         Test("connection refused", &testRefused),
         Test("waiting does not block the event loop", &testConcurrentReads),
         Test("interrupted task", &testInterrupt),
@@ -278,6 +279,51 @@ private void testReceiveTimeout()
     const elapsed = MonoTime.currTime - start;
     check(timedOut, "no ConnectionException on timeout");
     check(elapsed >= 150.msecs && elapsed < 3.seconds, "timeout took " ~ elapsed.toString());
+    transport.close();
+    server.stop();
+}
+
+private void testWaitForData()
+{
+    import dbwire.io.backend : waitForData;
+    import dbwire.io.transport : WaitableTransport;
+
+    static void lateReply(Socket s)
+    {
+        Thread.sleep(300.msecs);
+        ubyte[1] reply = [7];
+        s.send(reply[]);
+        ubyte[1] b;
+        s.receive(b[]); // until the client closes
+    }
+
+    auto server = new TestServer(&lateReply);
+    auto transport = server.connect();
+    auto waitable = cast(WaitableTransport) transport;
+    check(waitable !is null && waitable.canWaitForData, "the vibe transport can't wait");
+    // another task runs while this one waits
+    int ticks;
+    void tick() nothrow
+    {
+        try
+            foreach (i; 0 .. 5)
+            {
+                sleep(20.msecs);
+                ticks++;
+            }
+        catch (Exception)
+        {
+        }
+    }
+
+    auto ticker = runTask(&tick);
+    auto start = MonoTime.currTime;
+    check(!waitable.waitForData(100.msecs), "data before the reply");
+    check(MonoTime.currTime - start >= 90.msecs, "returned before the timeout");
+    check(waitForData(transport, 5.seconds, backendFor(IoMode.auto_)), "no data within 5 s");
+    ticker.join();
+    check(ticks == 5, "the other task did not run while waiting");
+    check(readSome(transport, 1) == [7], "reply differs");
     transport.close();
     server.stop();
 }

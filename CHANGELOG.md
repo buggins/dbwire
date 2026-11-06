@@ -4,6 +4,16 @@ All notable changes to dbwire are documented here. The format follows
 [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and the project uses
 [semantic versioning](https://semver.org/).
 
+## Unreleased
+
+### Added
+
+- `dbwire:io` (#34): `WaitableTransport` (`waitForData(timeout)`,
+  `canWaitForData`), implemented by the Phobos (`select`), vibe.d
+  (`waitForDataEx`), TLS (only application data ends the wait) and mock
+  transports; `dbwire.io.backend.waitForData(transport, timeout, backend)`
+  falls back to polling with pauses in the backend's I/O mode.
+
 ## 0.6.0 — 2026-11-03
 
 ### Added

@@ -13,7 +13,7 @@ module dbwire.io.backend;
 import core.time : Duration;
 
 import dbwire.exception : ClientException;
-import dbwire.io.transport : Transport;
+import dbwire.io.transport : Transport, WaitableTransport;
 
 /// Which I/O backend a connection uses.
 enum IoMode
@@ -178,4 +178,106 @@ private void warnIfBlockingEventLoop() @safe nothrow
     {
         // logging is best effort
     }
+}
+
+/++
+Waits up to `timeout` (`Duration.max`: without limit) until data from the
+server can be read from `transport` without blocking. Transports that
+implement `WaitableTransport` wait for it; for the others the data is checked
+every few milliseconds (at most 50), pausing in `backend`'s I/O mode (other
+tasks run meanwhile in fiber mode).
+
+Returns: true when data can be read, false on timeout.
+Throws: `dbwire.exception.ConnectionException` on network errors.
++/
+bool waitForData(Transport transport, Duration timeout, IoBackend backend) @safe
+{
+    import core.time : MonoTime, msecs;
+
+    if (auto waitable = cast(WaitableTransport) transport)
+        if (waitable.canWaitForData)
+            return waitable.waitForData(timeout);
+    if (transport.dataAvailable())
+        return true;
+    const forever = timeout == Duration.max;
+    const deadline = forever ? MonoTime.max : MonoTime.currTime + timeout;
+    auto pause = 1.msecs;
+    PoolSync sync;
+    for (;;)
+    {
+        const now = MonoTime.currTime;
+        if (now >= deadline)
+            return false;
+        const remaining = deadline - now;
+        if (sync is null)
+            sync = backend.newPoolSync();
+        sync.lock();
+        sync.wait(forever || pause < remaining ? pause : remaining);
+        sync.unlock();
+        if (transport.dataAvailable())
+            return true;
+        if (pause < 50.msecs)
+            pause *= 2;
+    }
+}
+
+@safe unittest
+{
+    import core.time : msecs, MonoTime;
+    import dbwire.io.mock : MockTransport;
+    import dbwire.io.phobos : PhobosBackend;
+
+    // the mock transport waits for nothing: queued data or not
+    auto mock = new MockTransport;
+    assert(!waitForData(mock, 20.msecs, new PhobosBackend));
+    mock.feed([1]);
+    assert(waitForData(mock, 20.msecs, new PhobosBackend));
+}
+
+@safe unittest
+{
+    import core.time : msecs, MonoTime;
+    import dbwire.io.phobos : PhobosBackend;
+
+    // a transport that can't wait: polled until the timeout
+    static final class Polled : Transport
+    {
+        int checks;
+        int dataAfter = int.max;
+
+        override size_t read(scope ubyte[] buffer) @safe
+        {
+            return 0;
+        }
+
+        override void write(scope const(ubyte)[] data) @safe
+        {
+        }
+
+        override bool dataAvailable() @safe
+        {
+            return ++checks >= dataAfter;
+        }
+
+        override void close() @safe nothrow
+        {
+        }
+
+        override bool connected() const @safe nothrow
+        {
+            return true;
+        }
+
+        override void setTimeouts(Duration receive, Duration send) @safe
+        {
+        }
+    }
+
+    auto polled = new Polled;
+    const start = MonoTime.currTime;
+    assert(!waitForData(polled, 60.msecs, new PhobosBackend));
+    assert(MonoTime.currTime - start >= 60.msecs && polled.checks > 2);
+    polled.checks = 0;
+    polled.dataAfter = 3;
+    assert(waitForData(polled, Duration.max, new PhobosBackend) && polled.checks == 3);
 }
