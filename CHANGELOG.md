@@ -4,6 +4,13 @@ All notable changes to dbwire are documented here. The format follows
 [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and the project uses
 [semantic versioning](https://semver.org/).
 
+## Unreleased
+
+### Added
+
+- `dbwire:tls` (#32): `TlsTransport.peerCertificate`, the server's
+  certificate in DER form (for SCRAM channel binding, `tls-server-end-point`).
+
 ## 0.6.0 — 2026-11-03
 
 ### Added
