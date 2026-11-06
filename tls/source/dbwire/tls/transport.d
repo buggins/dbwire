@@ -519,6 +519,33 @@ final class TlsTransport : Transport, WaitableTransport
         return n > 0 ? cast(string) text[0 .. n] : "";
     }
 
+    /++
+    The server's certificate (the leaf, not its chain) in DER form, e.g. for
+    SCRAM channel binding (`tls-server-end-point`, RFC 5929), which hashes
+    it; null if the server sent no certificate.
+    +/
+    @property immutable(ubyte)[] peerCertificate() @trusted
+    {
+        // the chain and its certificates are owned by the SSL object; i2d_X509 writes into our buffer
+        sslLock.lock();
+        scope (exit)
+            sslLock.unlock();
+        if (ssl is null)
+            return null;
+        auto chain = api.sslGetPeerCertChain(ssl);
+        if (chain is null || api.skNum(chain) < 1)
+            return null;
+        auto certificate = cast(const(X509)*) api.skValue(chain, 0);
+        const length = api.i2dX509(certificate, null);
+        if (length <= 0)
+            return null;
+        auto der = new ubyte[length];
+        ubyte* output = der.ptr;
+        if (api.i2dX509(certificate, &output) != length)
+            return null;
+        return cast(immutable) der;
+    }
+
     /// The negotiated protocol, e.g. `"TLSv1.3"`.
     @property string protocolVersion() @trusted
     {
@@ -1155,6 +1182,21 @@ unittest
     assert(viaIp.clientError is null, viaIp.clientError.msg);
 }
 
+// The DER bytes of the first certificate in a PEM file.
+version (unittest) private immutable(ubyte)[] pemCertificate(string file)
+{
+    import std.algorithm.searching : findSplit;
+    import std.base64 : Base64;
+    import std.file : readText;
+    import std.string : lineSplitter, strip;
+
+    const text = readText(file).findSplit("-----BEGIN CERTIFICATE-----")[2].findSplit("-----END CERTIFICATE-----")[0];
+    string base64;
+    foreach (line; text.lineSplitter)
+        base64 ~= line.strip;
+    return Base64.decode(base64).idup;
+}
+
 // The server certificate's subject; chain verification without the name check
 unittest
 {
@@ -1167,6 +1209,8 @@ unittest
         pair.close();
     assert(pair.clientError is null, pair.clientError.msg);
     assert(pair.client.peerSubject == "CN=localhost", pair.client.peerSubject);
+    // the certificate in DER form: the server.pem certificate decoded
+    assert(pair.client.peerCertificate == pemCertificate(testFile("server.pem")), "peerCertificate");
 
     auto wrongName = trustingOptions();
     wrongName.serverName = "wrong.example";
