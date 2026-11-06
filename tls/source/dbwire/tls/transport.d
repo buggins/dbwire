@@ -23,7 +23,7 @@ import core.time : Duration;
 import dbwire.exception : ClientException, ConnectionException;
 import dbwire.io.backend : IoBackend, IoLock;
 import dbwire.tls.openssl;
-import dbwire.io.transport : Transport;
+import dbwire.io.transport : Transport, WaitableTransport;
 
 /// TLS protocol versions (`TlsOptions.minVersion`). TLS 1.0 and 1.1 are not supported.
 enum TlsVersion
@@ -205,7 +205,7 @@ data (`handshakeTransport`, e.g. an adapter that wraps the handshake records
 in the protocol's packets), and `detach` ends TLS while the connection goes on
 unencrypted.
 +/
-final class TlsTransport : Transport
+final class TlsTransport : Transport, WaitableTransport
 {
     private enum size_t writeChunk = 64 * 1024;
 
@@ -370,6 +370,45 @@ final class TlsTransport : Transport
                 throw failure("TLS read failed");
         }
         return false;
+    }
+
+    /// Whether `waitForData` can wait: when the raw transport can.
+    @property bool canWaitForData() @safe
+    {
+        auto waitable = cast(WaitableTransport) raw;
+        return waitable !is null && waitable.canWaitForData;
+    }
+
+    /++
+    Waits until application data can be read (or the stream ended), up to
+    `timeout`: TLS records without application data (session tickets, key
+    updates) are processed and don't end the wait.
+
+    Throws: `ClientException` if the raw transport can't wait (see
+    `canWaitForData`); `ConnectionException` on network or TLS errors.
+    +/
+    bool waitForData(Duration timeout) @safe
+    {
+        import core.time : MonoTime;
+        import dbwire.exception : ClientException;
+
+        if (dataAvailable())
+            return true;
+        auto waitable = cast(WaitableTransport) raw;
+        if (waitable is null || !waitable.canWaitForData)
+            throw new ClientException("The transport under the TLS stream can't wait for data");
+        const forever = timeout == Duration.max;
+        const deadline = forever ? MonoTime.max : MonoTime.currTime + timeout;
+        for (;;)
+        {
+            const now = MonoTime.currTime;
+            if (!forever && now >= deadline)
+                return false;
+            if (!waitable.waitForData(forever ? Duration.max : deadline - now))
+                return false;
+            if (dataAvailable())
+                return true; // else only records without application data, or part of a record
+        }
     }
 
     /++
@@ -1308,6 +1347,32 @@ unittest
     // since the reply, which goes with the client's next write
     transfer(pair.server, pair.client, [4, 5, 6, 7]);
     transfer(pair.client, pair.server, [8, 9]);
+}
+
+// waitForData: a timeout when only records without application data arrive (TLS 1.3 session
+// tickets after the handshake), then data written by the server from another thread
+unittest
+{
+    import core.thread : Thread;
+    import core.time : MonoTime, msecs, seconds;
+
+    if (!haveOpenSsl())
+        return;
+    auto pair = connectPair(trustingOptions());
+    scope (exit)
+        pair.close();
+    assert(pair.clientError is null, pair.clientError.msg);
+    assert(pair.client.canWaitForData);
+    const start = MonoTime.currTime;
+    assert(!pair.client.waitForData(150.msecs), "no application data yet");
+    assert(MonoTime.currTime - start >= 140.msecs, "waited for the timeout");
+    auto writer = new Thread({ Thread.sleep(50.msecs); pair.server.write([5]); });
+    writer.start();
+    assert(pair.client.waitForData(5.seconds), "data arrived");
+    writer.join();
+    ubyte[1] received;
+    assert(pair.client.read(received[]) == 1 && received[0] == 5);
+    assert(!pair.client.waitForData(10.msecs), "nothing more");
 }
 
 // One reader and one concurrent writer on each side, with key updates that make

@@ -10,10 +10,10 @@ module dbwire.io.mock;
 import core.time : Duration;
 
 import dbwire.exception : ConnectionException;
-import dbwire.io.transport : Transport;
+import dbwire.io.transport : Transport, WaitableTransport;
 
 /// A `Transport` backed by memory buffers.
-final class MockTransport : Transport
+final class MockTransport : Transport, WaitableTransport
 {
     private ubyte[] input;
     private bool closed;
@@ -70,6 +70,19 @@ final class MockTransport : Transport
     /// True while fed bytes remain.
     override bool dataAvailable() @safe
     {
+        return input.length > 0;
+    }
+
+    /// The mock can't receive data while waiting: true if data is queued, else false at once.
+    @property bool canWaitForData() @safe
+    {
+        return true;
+    }
+
+    /// ditto
+    bool waitForData(Duration timeout) @safe
+    {
+        cast(void) timeout; // nothing can arrive while waiting
         return input.length > 0;
     }
 

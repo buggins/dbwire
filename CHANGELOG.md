@@ -10,6 +10,11 @@ All notable changes to dbwire are documented here. The format follows
 
 - `dbwire:tls` (#32): `TlsTransport.peerCertificate`, the server's
   certificate in DER form (for SCRAM channel binding, `tls-server-end-point`).
+- `dbwire:io` (#34): `WaitableTransport` (`waitForData(timeout)`,
+  `canWaitForData`), implemented by the Phobos (`select`), vibe.d
+  (`waitForDataEx`), TLS (only application data ends the wait) and mock
+  transports; `dbwire.io.backend.waitForData(transport, timeout, backend)`
+  falls back to polling with pauses in the backend's I/O mode.
 
 ## 0.6.0 — 2026-11-03
 
