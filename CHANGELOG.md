@@ -6,6 +6,8 @@ All notable changes to dbwire are documented here. The format follows
 
 ## Unreleased
 
+## 0.7.0 — 2026-11-06
+
 ### Added
 
 - `dbwire:tls` (#32): `TlsTransport.peerCertificate`, the server's
