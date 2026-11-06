@@ -4,6 +4,18 @@ All notable changes to dbwire are documented here. The format follows
 [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and the project uses
 [semantic versioning](https://semver.org/).
 
+## Unreleased
+
+### Changed
+
+- `dbwire:types` (#33): `resolveTimeZone` reads the tz database's TZif files
+  itself (`TzifTimeZone`, RFC 8536), with `PosixTimeZone` as the fallback:
+  before a zone's first transition the offset is time type 0's (the local
+  mean time, e.g. +05:41:16 for Asia/Kathmandu before 1920), and after the
+  last transition the rules of the file's POSIX TZ footer apply (daylight
+  saving time after 2037). `TZDIR` names another tz database (also on
+  Windows).
+
 ## 0.6.0 — 2026-11-03
 
 ### Added

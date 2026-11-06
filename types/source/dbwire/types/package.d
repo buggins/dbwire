@@ -20,4 +20,5 @@ public import dbwire.exception;
 public import dbwire.types.decimal;
 public import dbwire.types.interval;
 public import dbwire.types.timezone;
+public import dbwire.types.tzif;
 public import dbwire.types.wideint;
