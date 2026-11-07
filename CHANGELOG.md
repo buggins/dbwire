@@ -6,6 +6,8 @@ All notable changes to dbwire are documented here. The format follows
 
 ## Unreleased
 
+## 0.8.0 — 2026-11-07
+
 ### Added
 
 - `dbwire:io` (#40): Unix-domain sockets. `connectUnixSocket(backend, path,
