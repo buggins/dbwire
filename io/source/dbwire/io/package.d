@@ -6,6 +6,8 @@ $(UL
     $(LI `dbwire.io.backend`: `IoMode`, `IoBackend` (connect, yield, locks) and
         `backendFor`, which picks thread or fiber mode.)
     $(LI `dbwire.io.phobos`: thread mode, blocking Phobos sockets.)
+    $(LI `dbwire.io.unixsocket`: Unix-domain sockets (`connectUnixSocket`) and
+        the peer process's user (`peerUserId`, `userName`).)
     $(LI `dbwire.io.vibecore`: fiber mode, vibe-core sockets (only when vibe-core
         is in the application's dependency graph).)
     $(LI `dbwire.io.buffer`: `BufferedReader`, `BufferedWriter`, `StringArena`.)
@@ -22,5 +24,6 @@ public import dbwire.io.buffer;
 public import dbwire.io.mock;
 public import dbwire.io.phobos;
 public import dbwire.io.transport;
+public import dbwire.io.unixsocket;
 
 version (Have_vibe_core) public import dbwire.io.vibecore : FiberLock, FiberPoolSync, VibeBackend, VibeTransport;
