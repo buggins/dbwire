@@ -72,6 +72,8 @@ package enum int sslTlsextErrNoAck = 3;
 package enum int bioCtrlPending = 10; // BIO_pending is BIO_ctrl(10)
 package enum c_long x509VOk = 0;
 package enum int sslKeyUpdateRequested = 1;
+package enum c_ulong x509VFlagCrlCheck = 0x4; // X509_V_FLAG_CRL_CHECK: the leaf certificate
+package enum c_ulong x509VFlagCrlCheckAll = 0x8; // X509_V_FLAG_CRL_CHECK_ALL: the whole chain
 /++
 `X509_NAME_print_ex` flags: `XN_FLAG_RFC2253` (RFC 2253 escaping, comma
 separators, last RDN first, short names, unknown fields dumped) without
@@ -114,6 +116,9 @@ extern (C) nothrow @nogc:
     @LibCrypto("X509_free") void function(X509* a) x509Free;
     @LibCrypto("i2d_X509") int function(const(X509)* a, ubyte** output) i2dX509;
     @LibCrypto("X509_STORE_add_cert") int function(X509Store* ctx, X509* x) x509StoreAddCert;
+    @LibCrypto("X509_STORE_load_locations")
+    int function(X509Store* ctx, const(char)* file, const(char)* dir) x509StoreLoadLocations;
+    @LibCrypto("X509_STORE_set_flags") int function(X509Store* ctx, c_ulong flags) x509StoreSetFlags;
     @LibCrypto("X509_get_subject_name") X509Name* function(const(X509)* x) x509GetSubjectName;
     @LibCrypto("X509_NAME_print_ex")
     int function(Bio* output, const(X509Name)* name, int indent, c_ulong flags) x509NamePrintEx;
