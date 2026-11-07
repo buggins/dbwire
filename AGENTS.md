@@ -45,7 +45,7 @@ dub.json                    root package "dbwire": source/dbwire/package.d (publ
                             depends on every subpackage; buildType "docs"
 types/   dbwire:types       source/dbwire/exception.d, source/dbwire/types/{decimal,wideint,interval,timezone,tzif}.d
                                                                                     no dependencies
-io/      dbwire:io          source/dbwire/io/{transport,backend,phobos,vibecore,buffer,mock}.d
+io/      dbwire:io          source/dbwire/io/{transport,backend,phobos,vibecore,unixsocket,buffer,mock}.d
                                                                                     types, vibe-core (optional)
 tls/     dbwire:tls         source/dbwire/tls/{openssl,transport}.d, testdata/ (certificates, make-test-certs.sh)
                                                                                     io; libs-windows: crypt32
@@ -72,6 +72,7 @@ Notes on `dbwire:io`:
 - `BufferedReader`/`BufferedWriter` members must not use the names of connectors' protocol functions (clickhoused's `readString()`, `readBytes()`, `readUVarInt()`, `writeString()`, `writeUVarInt()`): connectors define those as free functions called with UFCS, and D ignores a UFCS function when a member of the same name exists. Hence `readExactString`/`readExactBytes`.
 - `readByte`/`writeByte` are templates (`()()`) so that they are inlined into other packages' protocol code.
 - On Windows, `VibeTransport.dataAvailable` must not call `dataAvailableForRead`: eventcore's WinAPI driver (0.9.x) loses the data of an immediate read that completes at once. It checks `peek()` and the socket with `select()` instead.
+- Unix-domain sockets (`dbwire.io.unixsocket`): vibe-core's `connectTCP(NetworkAddress, ...)` always binds the client socket, to an all-zero `sockaddr_un` by default, so a second concurrent connection fails with `bindFailure` (1.x and 2.x). `VibeBackend.connectUnix` binds each connection to a unique name instead (abstract on Linux, else a temporary file removed after connecting). Don't build the `NetworkAddress` with `NetworkAddress(Address)` (it asserts the full structure length) and don't read `TCPConnection.remoteAddress` of a Unix socket on vibe-core 1.x (its buffer is too small: an eventcore assert); `VibeTransport` takes a `unixSocket` flag instead. Abstract sockets work only in thread mode (vibe-core passes the full structure length).
 - The vibe runners test `vibecore.d`, which unit tests can't reach (vibe-core isn't a dependency of `dub test :io`). Their test servers run on a plain thread with blocking sockets, so they don't depend on vibe's listen API (different in 1.x and 2.x). vibe-core 2.x starts a new task immediately (`runTask` runs it until its first yield).
 
 Each subpackage has its own `dub.json` in its directory, listed in the root `subPackages` array; sibling dependencies are written `"dbwire:types": "*"`. Module names `dbwire.<area>.<name>`, each area with a `package.d` of public imports.

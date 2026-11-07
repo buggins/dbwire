@@ -6,6 +6,15 @@ All notable changes to dbwire are documented here. The format follows
 
 ## Unreleased
 
+### Added
+
+- `dbwire:io` (#40): Unix-domain sockets. `connectUnixSocket(backend, path,
+  timeout)` through the optional `UnixSocketBackend` interface, implemented
+  by `PhobosBackend` (also Linux abstract sockets) and `VibeBackend` on POSIX
+  systems; `peerUserId(transport)` (`PeerCredentials`: `SO_PEERCRED` on
+  Linux, `getpeereid` on macOS and the BSDs) and `userName(uid)`, e.g. for
+  PostgreSQL's `requirepeer`.
+
 ## 0.7.0 — 2026-11-06
 
 ### Added

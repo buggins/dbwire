@@ -60,6 +60,7 @@ private int runAll()
         Test("receive timeout", &testReceiveTimeout),
         Test("waitForData: timeout, data, other tasks run", &testWaitForData),
         Test("connection refused", &testRefused),
+        Test("Unix-domain sockets: two at once, peer user, abstract refused", &testUnixSockets),
         Test("waiting does not block the event loop", &testConcurrentReads),
         Test("interrupted task", &testInterrupt),
         Test("use from another thread", &testOtherThread),
@@ -242,6 +243,80 @@ private void testRoundTrip()
     check(readSome(transport, 3) == [1, 2, 3], "echo differs");
     transport.close();
     server.stop();
+}
+
+private void testUnixSockets()
+{
+    version (Posix)
+    {
+        import core.sys.posix.unistd : getuid;
+        import std.conv : to;
+        import std.file : exists, remove, tempDir;
+        import std.path : buildPath;
+        import std.process : thisProcessID;
+        import std.socket : AddressFamily, SocketType, UnixAddress;
+
+        const path = buildPath(tempDir, "dbwire-vibe-test-" ~ thisProcessID.to!string ~ ".sock");
+        if (exists(path))
+            remove(path);
+        auto listener = new Socket(AddressFamily.UNIX, SocketType.STREAM);
+        scope (exit)
+        {
+            listener.close();
+            if (exists(path))
+                remove(path);
+        }
+        listener.bind(new UnixAddress(path));
+        listener.listen(2);
+        // two connections at once: each gets its byte back plus one
+        auto thread = new Thread({
+            Socket[2] connections;
+            foreach (ref c; connections)
+            {
+                c = listener.accept();
+                c.setOption(SocketOptionLevel.SOCKET, SocketOption.RCVTIMEO, 10.seconds);
+            }
+            foreach (c; connections)
+            {
+                ubyte[1] b;
+                if (c.receive(b[]) == 1)
+                {
+                    b[0]++;
+                    c.send(b[]);
+                }
+            }
+            foreach (c; connections)
+            {
+                ubyte[1] rest;
+                c.receive(rest[]); // until the client closes
+                c.close();
+            }
+        });
+        thread.isDaemon = true;
+        thread.start();
+
+        auto backend = backendFor(IoMode.auto_);
+        auto first = connectUnixSocket(backend, path, 5.seconds);
+        auto second = connectUnixSocket(backend, path, 5.seconds);
+        first.write([1]);
+        second.write([5]);
+        check(readSome(first, 1) == [2], "first reply differs");
+        check(readSome(second, 1) == [6], "second reply differs");
+        check(peerUserId(first) == getuid(), "peer user id differs");
+        first.close();
+        second.close();
+        const deadline = MonoTime.currTime + 10.seconds;
+        while (thread.isRunning && MonoTime.currTime < deadline)
+            sleep(5.msecs);
+        check(!thread.isRunning, "the test server did not finish");
+
+        bool refused;
+        try
+            connectUnixSocket(backend, "\0dbwire-abstract", 5.seconds);
+        catch (ClientException)
+            refused = true;
+        check(refused, "an abstract socket was not refused in fiber mode");
+    }
 }
 
 private void testEndOfStream()
