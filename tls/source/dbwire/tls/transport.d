@@ -45,6 +45,19 @@ struct TlsOptions
     string keyFile;
     /// Password of an encrypted private key (`ENCRYPTED PRIVATE KEY`, e.g. in an Oracle wallet).
     string keyPassword;
+    /++
+    PEM file with certificate revocation lists (CRLs). When it or `crlDir` is
+    set, every certificate of the server's chain is checked against the CRLs,
+    and a certificate whose issuer has no CRL fails verification (OpenSSL's
+    `-crl_check_all`, as libpq does). Ignored with `skipVerify`.
+    +/
+    string crlFile;
+    /++
+    Directory of CRLs, each in a PEM file named by its issuer's hash,
+    `<hash>.r0` (`openssl rehash` names them so); looked up when needed.
+    See `crlFile`.
+    +/
+    string crlDir;
     /// Don't verify the server certificate or its name. For development only.
     bool skipVerify;
     /++
@@ -87,6 +100,8 @@ final class TlsContext
         string certFile;
         string keyFile;
         string keyPassword;
+        string crlFile;
+        string crlDir;
         bool skipVerify;
         TlsVersion minVersion;
         TlsVersion maxVersion;
@@ -103,8 +118,8 @@ final class TlsContext
     +/
     static TlsContext client(const TlsOptions options) @safe
     {
-        const key = Key(options.caFile, options.certFile, options.keyFile, options.keyPassword, options.skipVerify,
-                options.minVersion, options.maxVersion);
+        const key = Key(options.caFile, options.certFile, options.keyFile, options.keyPassword, options.crlFile,
+                options.crlDir, options.skipVerify, options.minVersion, options.maxVersion);
         synchronized
         {
             if (auto found = cachedContext(key))
@@ -153,6 +168,17 @@ final class TlsContext
                 // OpenSSL's defaults don't include the Windows certificate store
                 version (Windows)
                     windowsRootCertificates = addWindowsRootCertificates(api, ctx);
+            }
+            if (options.crlFile.length || options.crlDir.length)
+            {
+                auto store = api.sslCtxGetCertStore(ctx);
+                check(api.x509StoreLoadLocations(store, options.crlFile.length ? options.crlFile.toStringz
+                        : null,
+                        options.crlDir.length ? options.crlDir.toStringz : null),
+                        "Cannot load certificate revocation lists from "
+                        ~ (options.crlFile.length ? options.crlFile : options.crlDir));
+                check(api.x509StoreSetFlags(store, x509VFlagCrlCheck | x509VFlagCrlCheckAll),
+                        "Cannot enable certificate revocation checks");
             }
             api.sslCtxSetVerify(ctx, server ? sslVerifyPeer | sslVerifyFailIfNoPeerCert : sslVerifyPeer, null);
         }
@@ -1226,6 +1252,71 @@ unittest
     unknownCa.close();
     assert(cast(ConnectionException) unknownCa.clientError !is null);
     assert(unknownCa.clientError.msg.canFind("verification failed"), unknownCa.clientError.msg);
+}
+
+// Certificate revocation lists: from a file or a hashed directory, for the whole chain
+unittest
+{
+    import std.algorithm.searching : canFind;
+    import std.exception : collectException;
+
+    if (!haveOpenSsl())
+        return;
+    TlsContext crlServer(string name)
+    {
+        TlsOptions options;
+        options.certFile = testFile(name ~ ".pem");
+        options.keyFile = testFile(name ~ ".key");
+        return new TlsContext(options, true);
+    }
+
+    TlsOptions fromFile;
+    fromFile.caFile = testFile("crl-ca.pem");
+    fromFile.crlFile = testFile("crl.pem");
+    TlsOptions fromDir;
+    fromDir.caFile = testFile("crl-ca.pem");
+    fromDir.crlDir = testFile("crls");
+    foreach (options; [fromFile, fromDir])
+    {
+        auto good = connectPair(options, "localhost", crlServer("crl-good"));
+        good.close();
+        assert(good.clientError is null, good.clientError.msg);
+
+        auto revoked = connectPair(options, "localhost", crlServer("crl-revoked"));
+        revoked.close();
+        assert(cast(ConnectionException) revoked.clientError !is null);
+        assert(revoked.clientError.msg.canFind("certificate revoked"), revoked.clientError.msg);
+
+        // without revocation checks the revoked certificate passes
+        TlsOptions unchecked;
+        unchecked.caFile = options.caFile;
+        auto passes = connectPair(unchecked, "localhost", crlServer("crl-revoked"));
+        passes.close();
+        assert(passes.clientError is null, passes.clientError.msg);
+    }
+
+    // a chain whose issuer has no CRL fails, as with -crl_check_all
+    auto noCrl = trustingOptions();
+    noCrl.crlFile = testFile("crl.pem");
+    auto missing = connectPair(noCrl);
+    missing.close();
+    assert(cast(ConnectionException) missing.clientError !is null);
+    assert(missing.clientError.msg.canFind("CRL"), missing.clientError.msg);
+
+    // skipVerify ignores the CRLs
+    TlsOptions skipped;
+    skipped.skipVerify = true;
+    skipped.crlFile = testFile("crl.pem");
+    auto ignored = connectPair(skipped, "localhost", crlServer("crl-revoked"));
+    ignored.close();
+    assert(ignored.clientError is null, ignored.clientError.msg);
+
+    // an unreadable CRL file fails when the context is created
+    TlsOptions unreadable;
+    unreadable.caFile = testFile("crl-ca.pem");
+    unreadable.crlFile = testFile("no-such-crl.pem");
+    auto e = collectException!ClientException(TlsContext.client(unreadable));
+    assert(e !is null && e.msg.canFind("no-such-crl.pem"), e is null ? "no exception" : e.msg);
 }
 
 // An encrypted private key with its password
