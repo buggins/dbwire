@@ -14,6 +14,10 @@ All notable changes to dbwire are documented here. The format follows
   systems; `peerUserId(transport)` (`PeerCredentials`: `SO_PEERCRED` on
   Linux, `getpeereid` on macOS and the BSDs) and `userName(uid)`, e.g. for
   PostgreSQL's `requirepeer`.
+- `dbwire:tls` (#41): certificate revocation lists, `TlsOptions.crlFile` (a
+  PEM file) and `TlsOptions.crlDir` (CRLs named `<hash>.r0`). When either is
+  set, the server's whole certificate chain is checked, and a certificate
+  whose issuer has no CRL fails verification (as libpq's `sslcrl`).
 
 ## 0.7.0 — 2026-11-06
 
