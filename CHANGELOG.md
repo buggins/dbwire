@@ -8,6 +8,12 @@ All notable changes to dbwire are documented here. The format follows
 
 ### Added
 
+- `dbwire:io` (#40): Unix-domain sockets. `connectUnixSocket(backend, path,
+  timeout)` through the optional `UnixSocketBackend` interface, implemented
+  by `PhobosBackend` (also Linux abstract sockets) and `VibeBackend` on POSIX
+  systems; `peerUserId(transport)` (`PeerCredentials`: `SO_PEERCRED` on
+  Linux, `getpeereid` on macOS and the BSDs) and `userName(uid)`, e.g. for
+  PostgreSQL's `requirepeer`.
 - `dbwire:tls` (#41): certificate revocation lists, `TlsOptions.crlFile` (a
   PEM file) and `TlsOptions.crlDir` (CRLs named `<hash>.r0`). When either is
   set, the server's whole certificate chain is checked, and a certificate

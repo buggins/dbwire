@@ -28,18 +28,25 @@ import vibe.core.task : InterruptException;
 import dbwire.exception : ClientException, ConnectionException;
 import dbwire.io.backend : IoBackend, IoLock, PoolSync;
 import dbwire.io.transport : Transport, WaitableTransport;
+import dbwire.io.unixsocket : displayPath, PeerCredentials, socketPeerUserId, UnixSocketBackend;
 
-/// `Transport` over a vibe-core `TCPConnection`.
-final class VibeTransport : Transport, WaitableTransport
+/// `Transport` over a vibe-core `TCPConnection` (TCP or Unix-domain).
+final class VibeTransport : Transport, WaitableTransport, PeerCredentials
 {
     private TCPConnection connection;
     private Thread owner;
     private Duration receiveTimeout = Duration.max;
+    // a Unix-domain socket; not taken from remoteAddress, which vibe-core 1.x can't read for them
+    private bool unixSocket;
 
-    /// Wraps a connected `TCPConnection`. The transport takes ownership of it.
-    this(TCPConnection connection) @safe
+    /++
+    Wraps a connected `TCPConnection`. The transport takes ownership of it.
+    `unixSocket` tells that it is a Unix-domain socket, for `peerUserId`.
+    +/
+    this(TCPConnection connection, bool unixSocket = false) @safe
     {
         this.connection = connection;
+        this.unixSocket = unixSocket;
         owner = currentThread();
     }
 
@@ -137,6 +144,15 @@ final class VibeTransport : Transport, WaitableTransport
         connection.readTimeout = receiveTimeout;
     }
 
+    /// The user id of the peer process; only for Unix-domain sockets.
+    uint peerUserId() @safe
+    {
+        checkThread();
+        if (!unixSocket)
+            throw new ClientException("Peer credentials need a Unix-domain socket");
+        return socketPeerUserId(connection.fd);
+    }
+
     private void checkThread() const @safe
     {
         if (currentThread() !is owner)
@@ -147,7 +163,7 @@ final class VibeTransport : Transport, WaitableTransport
 }
 
 /// Fiber-mode backend: connects with vibe-core.
-final class VibeBackend : IoBackend
+final class VibeBackend : IoBackend, UnixSocketBackend
 {
     override @property string name() const @safe pure nothrow
     {
@@ -167,6 +183,56 @@ final class VibeBackend : IoBackend
             return new VibeTransport(connectTCP(host, port, null, 0, timeout));
         catch (Exception e)
             throw new ConnectionException("Cannot connect to " ~ host ~ ":" ~ port.to!string ~ ": " ~ e.msg);
+    }
+
+    /++
+    Connects to the Unix-domain socket at `path` with `vibe.core.net.connectTCP`.
+    Linux abstract sockets are not supported in fiber mode.
+
+    vibe-core binds the client end of every Unix-domain socket it connects;
+    without a name of its own, a second connection would fail ("bindFailure").
+    Each connection therefore binds to a unique name: an abstract one on Linux,
+    else a file in the temporary directory, removed once connected.
+
+    Throws: `ConnectionException` on failure or timeout, `ClientException` for
+    an abstract socket or on platforms without Unix-domain sockets.
+    +/
+    Transport connectUnix(string path, Duration timeout) @safe
+    {
+        version (Posix)
+        {
+            import std.socket : AddressFamily, SocketException, UnixAddress;
+            import vibe.core.net : NetworkAddress;
+
+            if (path.length && path[0] == '\0')
+                throw new ClientException(
+                        "Abstract Unix-domain sockets are not supported in fiber mode: "
+                        ~ displayPath(path));
+            NetworkAddress address, local;
+            string localFile;
+            try
+            {
+                address = unixAddress(new UnixAddress(path));
+                localFile = clientSocketName();
+                local = unixAddress(new UnixAddress(localFile));
+            }
+            catch (SocketException e)
+                throw new ConnectionException("Invalid Unix-domain socket path " ~ path ~ ": " ~ e.msg);
+            version (linux)
+            {
+            }
+            else
+                scope (exit)
+                    removeFile(localFile);
+            try
+                return new VibeTransport(connectTCP(address, local, timeout), true);
+            catch (InterruptException e)
+                throw e;
+            catch (Exception e)
+                throw new ConnectionException("Cannot connect to " ~ path ~ ": " ~ e.msg);
+        }
+        else
+            throw new ClientException("Unix-domain sockets are not supported on this platform");
     }
 
     /// Lets other tasks run.
@@ -249,6 +315,64 @@ final class FiberLock : IoLock
     override void unlock() @trusted
     {
         mutex.unlock();
+    }
+}
+
+version (Posix)
+{
+    import vibe.core.net : NetworkAddress;
+    import std.socket : UnixAddress;
+
+    /// A vibe-core address for a Phobos Unix-domain address.
+    private NetworkAddress unixAddress(UnixAddress source) @trusted
+    {
+        import core.sys.posix.sys.un : sockaddr_un;
+        import std.socket : AddressFamily;
+
+        // UnixAddress keeps a whole sockaddr_un; NetworkAddress(Address) can't be used,
+        // it asserts that the address length is the structure's size
+        NetworkAddress address;
+        address.family = AddressFamily.UNIX;
+        *address.sockAddrUnix = *cast(const(sockaddr_un)*) source.name;
+        return address;
+    }
+
+    private shared ulong clientSocketCounter; // numbers the names of clientSocketName
+
+    /++
+    A unique name for the client end of a Unix-domain connection: abstract on
+    Linux (`\0dbwire-<pid>-<n>`), else a file in the temporary directory.
+    +/
+    private string clientSocketName() @safe
+    {
+        import core.atomic : atomicOp;
+        import std.conv : to;
+        import std.process : thisProcessID;
+
+        const name = "dbwire-" ~ thisProcessID.to!string ~ "-" ~ atomicOp!"+="(clientSocketCounter, 1).to!string;
+        version (linux)
+            return "\0" ~ name;
+        else
+        {
+            import std.file : tempDir;
+            import std.path : buildPath;
+
+            const file = buildPath(tempDir, name ~ ".sock");
+            removeFile(file); // left over by a crashed process with the same id
+            return file;
+        }
+    }
+
+    private void removeFile(string file) @safe nothrow
+    {
+        import std.file : remove;
+
+        try
+            remove(file);
+        catch (Exception)
+        {
+            // missing: nothing to remove
+        }
     }
 }
 
