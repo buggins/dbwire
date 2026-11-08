@@ -10,7 +10,7 @@ share the parts that are not protocol-specific. Its value types (exact decimals,
 128/256-bit integers) are also meant for [ddbc](https://github.com/buggins/ddbc)
 and [hibernated](https://github.com/buggins/hibernated).
 
-> **Status: 0.8.0.** All subpackages are in place: `dbwire:types`,
+> **Status: 0.9.0.** All subpackages are in place: `dbwire:types`,
 > `dbwire:io`, `dbwire:tls`, `dbwire:crypto`, `dbwire:charset` and
 > `dbwire:client`. The API may change until 1.0, which is planned together with
 > clickhoused 1.0. The plan is tracked in the
@@ -35,7 +35,7 @@ For example, in `dub.json`:
 
 ```json
 "dependencies": {
-    "dbwire:types": "~>0.8.0"
+    "dbwire:types": "~>0.9.0"
 }
 ```
 
