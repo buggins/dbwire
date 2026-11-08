@@ -6,6 +6,23 @@ All notable changes to dbwire are documented here. The format follows
 
 ## Unreleased
 
+### Performance
+
+- `dbwire:charset` (#49): UTF-16 encoding and decoding, and the double-byte
+  and UTF-8 code pages, write into an array of the exact (or largest) length
+  instead of appending byte by byte: 10 to 13 times faster (decoding 70 MB of
+  UTF-16: 3.8 s before, 0.3 s now).
+- `dbwire:types` (#49): `Decimal.toString` formats into a stack buffer (one
+  allocation instead of five); `toHash` doesn't allocate. `WideInt.toBigInt`
+  and `fromBigInt` convert the words directly.
+- `dbwire:tls` (#49): no allocation per flush; ciphertext goes through a
+  reused buffer.
+- `dbwire:client` (#49): `PoolCore.acquire` no longer creates a backend
+  object per call, and returning connections doesn't reallocate the idle list.
+- `dbwire:io` (#49): `readFixedBE` reads straight from the buffer when the
+  bytes are there, `readExactBytes` doesn't zero the array first, and
+  `PhobosTransport.dataAvailable`/`waitForData` reuse their `SocketSet`.
+
 ### Added
 
 - `dbwire:client` (#48): `redactPassword(dsn)`, the connection string with

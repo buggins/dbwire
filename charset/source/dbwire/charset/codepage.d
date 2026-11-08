@@ -24,7 +24,7 @@ module dbwire.charset.codepage;
 
 import dbwire.exception : ClientException;
 import dbwire.charset.tables;
-import dbwire.charset.utf16 : appendUtf8, decodeUtf8;
+import dbwire.charset.utf16 : appendUtf8, decodeUtf8, putUtf8, utf8Length;
 
 /// The code page number of UTF-8.
 enum uint utf8CodePage = 65_001;
@@ -163,30 +163,49 @@ struct CodePage
 
     private string decodeDoubleByte(scope const(ubyte)[] bytes) const @safe pure nothrow
     {
-        char[] result;
-        result.reserve(bytes.length * 3 / 2 + 1);
-        for (size_t i = 0; i < bytes.length;)
+        import std.array : uninitializedArray;
+
+        // Two passes: the exact UTF-8 length, then the characters
+        size_t scan(bool write)(scope char[] result) const @safe pure nothrow @nogc
         {
-            const b = bytes[i];
-            if (b < 0x80)
+            size_t pos;
+            void put(dchar c) @safe pure nothrow @nogc
             {
-                result ~= cast(char) b;
-                i++;
-                continue;
+                static if (write)
+                    pos = putUtf8(result, pos, c);
+                else
+                    pos += utf8Length(c);
             }
-            const lead = dbcsLeads[b];
-            if (lead == 0)
+
+            for (size_t i = 0; i < bytes.length;)
             {
-                appendUtf8(result, dbcsChar(0, b)); // a single byte
-                i++;
-                continue;
+                const b = bytes[i];
+                if (b < 0x80)
+                {
+                    static if (write)
+                        result[pos] = cast(char) b;
+                    pos++;
+                    i++;
+                    continue;
+                }
+                const lead = dbcsLeads[b];
+                if (lead == 0)
+                {
+                    put(dbcsChar(0, b)); // a single byte
+                    i++;
+                    continue;
+                }
+                if (i + 1 >= bytes.length)
+                    break; // a lead byte at the end: dropped, as Windows does
+                const trail = bytes[i + 1];
+                put(dbcsChar(lead, trail)); // trail 0: the default character
+                i += trail == 0 ? 1 : 2; // a 0x00 trail byte stays a character of its own
             }
-            if (i + 1 >= bytes.length)
-                break; // a lead byte at the end: dropped, as Windows does
-            const trail = bytes[i + 1];
-            appendUtf8(result, dbcsChar(lead, trail)); // trail 0: the default character
-            i += trail == 0 ? 1 : 2; // a 0x00 trail byte stays a character of its own
+            return pos;
         }
+
+        auto result = uninitializedArray!(char[])(scan!false(null));
+        scan!true(result);
         return (() @trusted => cast(string) result)(); // result is unique: built here
     }
 
@@ -272,6 +291,7 @@ struct CodePage
 
     private ubyte[] encodeImpl(scope const(char)[] text, int replacement) const @safe pure
     {
+        import std.array : uninitializedArray;
         import std.conv : to;
         import std.format : format;
 
@@ -284,15 +304,18 @@ struct CodePage
             }
         if (ascii)
             return cast(ubyte[]) text.dup;
-        ubyte[] result;
-        result.reserve(text.length);
+        // Never longer than the text: each character (or invalid sequence) gives at most
+        // as many bytes as its UTF-8 form has
+        auto result = uninitializedArray!(ubyte[])(text.length);
+        size_t pos;
         for (size_t i = 0; i < text.length;)
         {
             const start = i;
             const c = decodeUtf8(text, i);
             if (c >= 0 && isUtf8) // UTF-8: copy valid sequences
             {
-                result ~= cast(const(ubyte)[]) text[start .. i];
+                result[pos .. pos + i - start] = cast(const(ubyte)[]) text[start .. i];
+                pos += i - start;
                 continue;
             }
             int b = c < 0 ? -1 : bytesOf(c);
@@ -304,10 +327,10 @@ struct CodePage
                 b = replacement;
             }
             if (b >= 0x100)
-                result ~= cast(ubyte)(b >> 8); // the lead byte
-            result ~= cast(ubyte) b;
+                result[pos++] = cast(ubyte)(b >> 8); // the lead byte
+            result[pos++] = cast(ubyte) b;
         }
-        return result;
+        return result[0 .. pos];
     }
 }
 
@@ -336,17 +359,39 @@ struct CodePage
 
 private string decodeUtf8Text(scope const(ubyte)[] bytes) @safe pure nothrow
 {
-    auto text = (() @trusted => cast(const(char)[]) bytes)();
-    char[] result;
-    result.reserve(bytes.length);
-    for (size_t i = 0; i < text.length;)
+    import std.array : uninitializedArray;
+
+    const text = cast(const(char)[]) bytes;
+    // Two passes: the length with each invalid sequence replaced by U+FFFD (3 bytes), then the text
+    bool replaced;
+    size_t scan(bool write)(scope char[] result) @safe pure nothrow @nogc
     {
-        const start = i;
-        if (decodeUtf8(text, i) < 0)
-            appendUtf8(result, 0xFFFD);
-        else
-            result ~= text[start .. i];
+        size_t pos;
+        for (size_t i = 0; i < text.length;)
+        {
+            const start = i;
+            if (text[i] < 0x80)
+                i++;
+            else if (decodeUtf8(text, i) < 0)
+            {
+                replaced = true;
+                static if (write)
+                    putUtf8(result, pos, 0xFFFD);
+                pos += 3;
+                continue;
+            }
+            static if (write)
+                result[pos .. pos + i - start] = text[start .. i];
+            pos += i - start;
+        }
+        return pos;
     }
+
+    const length = scan!false(null);
+    if (!replaced)
+        return text.idup; // valid UTF-8 as it is
+    auto result = uninitializedArray!(char[])(length);
+    scan!true(result);
     return (() @trusted => cast(string) result)(); // result is unique: built here
 }
 
