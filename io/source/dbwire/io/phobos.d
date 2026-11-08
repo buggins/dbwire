@@ -10,7 +10,7 @@ import core.time : Duration;
 import std.socket;
 
 import dbwire.exception : ClientException, ConnectionException;
-import dbwire.io.backend : IoBackend, IoLock, PoolSync;
+import dbwire.io.backend : clampWait, IoBackend, IoLock, longestWait, PoolSync;
 import dbwire.io.transport : Transport, WaitableTransport;
 import dbwire.io.unixsocket : displayPath, PeerCredentials, socketPeerUserId, UnixSocketBackend;
 
@@ -81,7 +81,7 @@ final class PhobosTransport : Transport, WaitableTransport, PeerCredentials
                 if (timeout == Duration.max)
                     n = Socket.select(readable, null, null);
                 else
-                    n = Socket.select(readable, null, null, timeout);
+                    n = Socket.select(readable, null, null, clampWait(timeout));
                 if (n >= 0)
                     return n > 0;
                 // -1: interrupted by a signal; wait again (with the whole timeout: rare)
@@ -286,12 +286,14 @@ final class ThreadLock : IoLock
 
 private Socket connectSocket(Address address, Duration timeout, bool tcp = true) @safe
 {
-    auto socket = tcp ? new Socket(address.addressFamily, SocketType.STREAM, ProtocolType.TCP) : new Socket(
-            address.addressFamily, SocketType.STREAM);
-    scope (failure)
-        socket.close();
     try
     {
+        // Inside the try: a socket that can't be created (an address family the host
+        // doesn't support, no file descriptors left) must let the caller try the next address
+        auto socket = tcp ? new Socket(address.addressFamily, SocketType.STREAM, ProtocolType.TCP) : new Socket(
+                address.addressFamily, SocketType.STREAM);
+        scope (failure)
+            socket.close();
         // Non-blocking connect, then wait for the result with select() to enforce the timeout.
         socket.blocking = false;
         socket.connect(address);
@@ -299,7 +301,8 @@ private Socket connectSocket(Address address, Duration timeout, bool tcp = true)
         auto failed = new SocketSet; // Windows reports a failed connect here
         writable.add(socket);
         failed.add(socket);
-        const ready = Socket.select(null, writable, failed, timeout);
+        const ready = Socket.select(null, writable, failed,
+                timeout == Duration.zero ? longestWait : clampWait(timeout));
         const where = tcp ? address.toString() ~ ": " : "";
         if (ready == 0)
             throw new ConnectionException(where ~ "connect timed out");

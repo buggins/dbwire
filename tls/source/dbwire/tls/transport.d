@@ -141,12 +141,18 @@ final class TlsContext
         // zero-terminated copy of a D string that lives during the call.
         import std.string : toStringz;
 
+        if (options.minVersion > options.maxVersion)
+            throw new ClientException("TlsOptions.minVersion is above maxVersion");
         api = openSsl();
+        api.errClearError(); // so that the reasons below are this context's
         ctx = api.sslCtxNew(server ? api.tlsServerMethod() : api.tlsClientMethod());
         if (ctx is null)
             throw new ClientException("Cannot create a TLS context: " ~ errorQueueText(api));
-        if (options.minVersion > options.maxVersion)
-            throw new ClientException("TlsOptions.minVersion is above maxVersion");
+        scope (failure)
+        {
+            api.sslCtxFree(ctx); // a failed context is never used, and nothing else refers to it
+            ctx = null;
+        }
         api.sslCtxCtrl(ctx, sslCtrlSetMinProtoVersion, protocolNumber(options.minVersion), null);
         api.sslCtxCtrl(ctx, sslCtrlSetMaxProtoVersion, protocolNumber(options.maxVersion), null);
 
@@ -339,7 +345,7 @@ final class TlsTransport : Transport, WaitableTransport
                 return 0;
             }
             if (r.error != sslErrorWantRead)
-                throw failure("TLS read failed");
+                throw failure("TLS read failed", r.reasons);
             if (!fill())
                 return 0;
         }
@@ -356,8 +362,9 @@ final class TlsTransport : Transport, WaitableTransport
         while (data.length)
         {
             const chunk = data.length < writeChunk ? data : data[0 .. writeChunk];
-            if (!sslWrite(chunk))
-                throw failure("TLS write failed");
+            string reasons;
+            if (!sslWrite(chunk, reasons))
+                throw failure("TLS write failed", reasons);
             sendPending();
             data = data[chunk.length .. $];
         }
@@ -393,7 +400,7 @@ final class TlsTransport : Transport, WaitableTransport
                 return true;
             }
             if (r.error != sslErrorWantRead)
-                throw failure("TLS read failed");
+                throw failure("TLS read failed", r.reasons);
         }
         return false;
     }
@@ -617,6 +624,7 @@ final class TlsTransport : Transport, WaitableTransport
         // copies, and OpenSSL copies them in turn.
         import std.string : toStringz;
 
+        api.errClearError(); // so that the reasons below are this connection's
         ssl = api.sslNew(context.ctx);
         if (ssl is null)
             throw new ConnectionException("Cannot create a TLS connection: " ~ errorQueueText(api));
@@ -668,16 +676,16 @@ final class TlsTransport : Transport, WaitableTransport
     {
         for (;;)
         {
-            const error = handshakeStep();
+            const step = handshakeStep();
             flushOutput();
-            if (error == sslErrorNone)
+            if (step.error == sslErrorNone)
                 return;
-            if (error != sslErrorWantRead)
-                throw failure("TLS handshake with " ~ peerName ~ " failed");
+            if (step.error != sslErrorWantRead)
+                throw failure("TLS handshake with " ~ peerName ~ " failed", step.reasons);
             if (!fill())
             {
                 // a rejected certificate makes the peer close the connection
-                auto e = failure("TLS handshake with " ~ peerName ~ " failed");
+                auto e = failure("TLS handshake with " ~ peerName ~ " failed", null);
                 throw new ConnectionException(e.msg ~ " (the connection was closed by the peer)");
             }
         }
@@ -735,8 +743,27 @@ final class TlsTransport : Transport, WaitableTransport
     // holds sslLock, checks that ssl is still allocated, and passes OpenSSL pointers and
     // lengths of D arrays that stay alive during the call.
 
-    /// Advances the handshake. Returns `sslErrorNone` once it is complete, else the SSL error code.
-    private int handshakeStep() @trusted
+    /++
+    OpenSSL's error queue belongs to the thread, and in fiber mode other
+    connections on the thread use it as soon as this one yields (e.g. while
+    sending). The steps below therefore take the reasons of a failure at once,
+    while holding the lock.
+    +/
+    private static bool isFailure(int error) @safe pure nothrow @nogc
+    {
+        return error != sslErrorNone && error != sslErrorWantRead && error != sslErrorWantWrite
+            && error != sslErrorZeroReturn;
+    }
+
+    /// Result of one `SSL_do_handshake`.
+    private static struct StepResult
+    {
+        int error; /// `sslErrorNone` once the handshake is complete, else the SSL error code
+        string reasons; /// OpenSSL's reasons when it failed
+    }
+
+    /// Advances the handshake.
+    private StepResult handshakeStep() @trusted
     {
         sslLock.lock();
         scope (exit)
@@ -744,7 +771,11 @@ final class TlsTransport : Transport, WaitableTransport
         checkSsl();
         api.errClearError();
         const r = api.sslDoHandshake(ssl);
-        return r == 1 ? sslErrorNone : api.sslGetError(ssl, r);
+        StepResult step;
+        step.error = r == 1 ? sslErrorNone : api.sslGetError(ssl, r);
+        if (isFailure(step.error))
+            step.reasons = errorQueueText(api);
+        return step;
     }
 
     /// Result of one `SSL_read`.
@@ -753,6 +784,7 @@ final class TlsTransport : Transport, WaitableTransport
         int bytes; /// decrypted bytes, or <= 0
         int error; /// SSL error code when `bytes <= 0`
         bool outputPending; /// OpenSSL produced data to send (e.g. a queued key update)
+        string reasons; /// OpenSSL's reasons when it failed
     }
 
     private ReadResult sslRead(scope ubyte[] buffer) @trusted
@@ -765,11 +797,13 @@ final class TlsTransport : Transport, WaitableTransport
         ReadResult r;
         r.bytes = api.sslRead(ssl, buffer.ptr, buffer.length > int.max ? int.max : cast(int) buffer.length);
         r.error = r.bytes > 0 ? sslErrorNone : api.sslGetError(ssl, r.bytes);
+        if (isFailure(r.error))
+            r.reasons = errorQueueText(api);
         r.outputPending = api.bioCtrl(wbio, bioCtrlPending, 0, null) > 0;
         return r;
     }
 
-    private bool sslWrite(scope const(ubyte)[] data) @trusted
+    private bool sslWrite(scope const(ubyte)[] data, out string reasons) @trusted
     {
         sslLock.lock();
         scope (exit)
@@ -777,7 +811,10 @@ final class TlsTransport : Transport, WaitableTransport
         checkSsl();
         api.errClearError();
         // With a memory BIO for output, SSL_write consumes all of data or fails
-        return api.sslWrite(ssl, data.ptr, cast(int) data.length) == cast(int) data.length;
+        if (api.sslWrite(ssl, data.ptr, cast(int) data.length) == cast(int) data.length)
+            return true;
+        reasons = errorQueueText(api);
+        return false;
     }
 
     /// Bytes received from the peer and not decrypted yet (in the input BIO).
@@ -858,10 +895,10 @@ final class TlsTransport : Transport, WaitableTransport
             throw new ConnectionException("The TLS connection is closed");
     }
 
-    /// An exception for a failed OpenSSL call, with OpenSSL's reasons.
-    private ConnectionException failure(string what) @trusted
+    /// An exception for a failed OpenSSL call, with `reasons` from OpenSSL's error queue.
+    private ConnectionException failure(string what, string reasons) @trusted
     {
-        // reads the verification result of a live connection and this thread's error queue
+        // reads the verification result of a live connection
         c_long verify = x509VOk;
         try
         {
@@ -875,7 +912,6 @@ final class TlsTransport : Transport, WaitableTransport
         {
             // keep the generic message
         }
-        const reasons = errorQueueText(api);
         if (verify != x509VOk)
             return new ConnectionException("TLS certificate verification failed for " ~ peerName ~ ": "
                     ~ fromCString(

@@ -57,6 +57,7 @@ struct Dsn
         Dsn dsn;
         dsn.scheme = scheme;
         string rest = text[prefix.length .. $];
+        const shown = redactPassword(text); // error messages must not reveal the password
 
         string query;
         if (auto q = rest.findSplit("?"))
@@ -67,7 +68,7 @@ struct Dsn
         const slash = rest.indexOf('/');
         if (slash >= 0)
         {
-            dsn.path = decode(rest[slash + 1 .. $], text);
+            dsn.path = decode(rest[slash + 1 .. $], shown);
             rest = rest[0 .. slash];
         }
         const at = rest.lastIndexOf('@');
@@ -78,14 +79,14 @@ struct Dsn
             dsn.hasUser = true;
             if (auto up = userInfo.findSplit(":"))
             {
-                dsn.user = decode(up[0], text);
+                dsn.user = decode(up[0], shown);
                 dsn.hasPassword = true;
-                dsn.password = decode(up[2], text);
+                dsn.password = decode(up[2], shown);
             }
             else
-                dsn.user = decode(userInfo, text);
+                dsn.user = decode(userInfo, shown);
         }
-        dsn.params = parseQuery(query, text);
+        dsn.params = parseQuery(query, shown);
         if (rest.length == 0)
             throw new ClientException("The connection string has no host");
         foreach (hostPort; rest.split(","))
@@ -93,7 +94,7 @@ struct Dsn
             try
                 dsn.hosts ~= parseHostPort(hostPort);
             catch (ClientException e)
-                throw new ClientException(e.msg ~ " in '" ~ text ~ "'");
+                throw new ClientException(e.msg ~ " in '" ~ shown ~ "'");
         }
         return dsn;
     }
@@ -107,6 +108,44 @@ struct Dsn
     assert(dsn.user == "reader" && dsn.password == "s@cret" && dsn.path == "analytics");
     assert(dsn.hosts == [HostPort("db1", 9001), HostPort("db2")]); // db2: the connector's default port
     assert(dsn.params.length == 2 && dsn.params["compress"] == "lz4" && dsn.params["max_threads"] == "4");
+}
+
+/++
+`text` with the password in its user info replaced by `***`, e.g.
+`db://user:***@host/db`, for error messages and logs. The parts are found as
+`Dsn.parse` finds them; text without `://` or without a password is returned unchanged.
++/
+string redactPassword(string text) @safe pure
+{
+    import std.string : indexOf, lastIndexOf;
+
+    const scheme = text.indexOf("://");
+    if (scheme < 0)
+        return text;
+    const start = scheme + 3;
+    size_t end = text.length;
+    const query = text[start .. $].indexOf('?');
+    if (query >= 0)
+        end = start + query;
+    const slash = text[start .. end].indexOf('/');
+    if (slash >= 0)
+        end = start + slash;
+    const at = text[start .. end].lastIndexOf('@');
+    if (at < 0)
+        return text;
+    const colon = text[start .. start + at].indexOf(':');
+    if (colon < 0)
+        return text;
+    return text[0 .. start + colon + 1] ~ "***" ~ text[start + at .. $];
+}
+
+///
+@safe unittest
+{
+    assert(redactPassword("pg://app:s3cret@db1,db2/main?x=1") == "pg://app:***@db1,db2/main?x=1");
+    assert(redactPassword("pg://app:p@ss@db") == "pg://app:***@db"); // the last '@' ends the user info
+    assert(redactPassword("pg://app@db/x?a=b@c") == "pg://app@db/x?a=b@c"); // no password
+    assert(redactPassword("pg://db:5432") == "pg://db:5432");
 }
 
 /++
@@ -243,6 +282,16 @@ private string decode(string encoded, string context) @safe
         "db://h?x=%zz", "db://h,,h2", "db://:9000", "db://user@"
     ])
         assertThrown!ClientException(Dsn.parse(bad, "db"), bad);
+
+    // Error messages quote the string without its password
+    foreach (bad; ["db://u:topsecret@h:99999", "db://u:topsecret@h/?x=%zz", "db://u:topsecret%zz@h"])
+    {
+        import std.algorithm.searching : canFind;
+        import std.exception : collectException;
+
+        auto e = collectException!ClientException(Dsn.parse(bad, "db"));
+        assert(e !is null && !e.msg.canFind("topsecret") && e.msg.canFind("u:***@h"), e.msg);
+    }
 
     // Value parsers
     assertThrown!ClientException(parseSeconds("t", "-1"));

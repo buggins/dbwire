@@ -80,7 +80,8 @@ interface WaitableTransport
 }
 
 /++
-Opens a new transport to `host`:`port`, giving up after `connectTimeout`.
+Opens a new transport to `host`:`port`, giving up after `connectTimeout`
+(`Duration.zero` or `Duration.max`: without limit).
 
 Connectors accept one in their connection options to replace the I/O
 backend's own connect logic, e.g. for Unix sockets, proxies or tests.

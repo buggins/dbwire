@@ -10,14 +10,22 @@ module dbwire.crypto.pbkdf2;
 import std.digest : digestLength, isDigest;
 import std.digest.hmac : HMAC;
 
+import dbwire.exception : ClientException;
+
 /++
 Derives `length` bytes from `password` and `salt` with `iterations` rounds of
 HMAC-`H` (e.g. `pbkdf2!SHA512(...)`).
+
+The iteration count often comes from the server: connectors should also
+reject counts too high to compute in reasonable time.
+
+Throws: `ClientException` if `iterations` is 0.
 +/
 ubyte[] pbkdf2(H)(scope const(ubyte)[] password, scope const(ubyte)[] salt, uint iterations, size_t length)
         if (isDigest!H)
 {
-    assert(iterations >= 1, "PBKDF2 needs at least one iteration");
+    if (iterations == 0)
+        throw new ClientException("PBKDF2 needs at least one iteration");
     enum size_t hLen = digestLength!H;
     auto mac = HMAC!H(password);
     auto result = new ubyte[length];
@@ -77,4 +85,13 @@ version (unittest) private ubyte[] unhex(string s) @safe pure
     assert(pbkdf2!SHA512(b("passwordPASSWORDpassword"), b("saltSALTsaltSALTsaltSALTsaltSALTsalt"), 4096, 64) == unhex(
             "8c0511f4c6e597c6ac6315d8f0362e225f3c501495ba23b868c005174dc4ee71"
             ~ "115b59f9e60cd9532fa33e0f75aefe30225c583a186cd82bd4daea9724a3d3b8"));
+}
+
+@safe unittest
+{
+    import std.digest.sha : SHA512;
+    import std.exception : assertThrown;
+
+    // a server-supplied count of 0 is an error, not an assertion failure
+    assertThrown!ClientException(pbkdf2!SHA512([1], [2], 0, 64));
 }

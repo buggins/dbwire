@@ -22,8 +22,8 @@ module dbwire.client.pool;
 import core.thread : Thread;
 import core.time : Duration, MonoTime, hours, minutes, seconds;
 
-import dbwire.exception : ClientException;
-import dbwire.io.backend : IoMode, PoolSync, backendFor;
+import dbwire.exception : ClientException, DbException;
+import dbwire.io.backend : clampWait, IoMode, PoolSync, backendFor;
 
 /// What the pool needs from a connection.
 interface Poolable
@@ -35,7 +35,8 @@ interface Poolable
     /// not read to the end): such a connection is closed, not reused.
     @property bool isBusy() const @safe nothrow;
 
-    /// Checks that the server still answers; throws if it doesn't.
+    /// Checks that the server still answers; throws a `DbException` if it doesn't.
+    /// Other exceptions (e.g. an interrupted vibe.d task) reach `PoolCore.acquire`'s caller.
     void ping() @safe;
 
     /// Closes the connection.
@@ -50,7 +51,8 @@ struct PoolOptions
 {
     /// Maximum number of open connections (per thread in fiber mode).
     size_t maxConnections = 16;
-    /// How long `PoolCore.acquire` waits for a free connection before failing.
+    /// How long `PoolCore.acquire` waits for a free connection before failing
+    /// (`Duration.zero`: not at all; `Duration.max`: without limit).
     Duration waitTimeout = 30.seconds;
     /// Idle connections older than this are closed.
     Duration maxIdleTime = 5.minutes;
@@ -112,9 +114,9 @@ struct PoolOptions
     static PoolOptions fromDsn(string dsn) @safe
     {
         import std.algorithm.searching : findSplit;
-        import dbwire.client.dsn : parseQuery;
+        import dbwire.client.dsn : parseQuery, redactPassword;
 
-        return fromParams(parseQuery(dsn.findSplit("?")[2], dsn));
+        return fromParams(parseQuery(dsn.findSplit("?")[2], redactPassword(dsn)));
     }
 
     ///
@@ -342,7 +344,7 @@ private final class SubPool
     Poolable acquire() @safe
     {
         const options = owner.poolOptions;
-        const deadline = MonoTime.currTime + options.waitTimeout;
+        const deadline = MonoTime.currTime + clampWait(options.waitTimeout);
         for (;;)
         {
             Poolable[] expired;
@@ -405,10 +407,18 @@ private final class SubPool
                 candidate.ping();
                 return candidate;
             }
-            catch (Exception)
+            catch (DbException)
             {
                 candidate.close(); // dead: try another one
                 forget(candidate);
+            }
+            catch (Exception e)
+            {
+                // not a database error, e.g. the task was interrupted: the connection is in an
+                // unknown state, and the caller must see the exception
+                candidate.close();
+                forget(candidate);
+                throw e;
             }
         }
     }
@@ -496,6 +506,7 @@ version (unittest)
         bool open = true;
         bool busy;
         bool failPing;
+        bool interruptPing; // throws a non-database exception, as an interrupted vibe.d task does
         int pings;
 
         this(int id) @safe
@@ -518,6 +529,8 @@ version (unittest)
             pings++;
             if (failPing)
                 throw new ConnectionException("server gone");
+            if (interruptPing)
+                throw new Exception("interrupted");
         }
 
         void close() @safe nothrow
@@ -574,6 +587,27 @@ version (unittest)
     assertThrown!ClientException(t.pool.acquire());
     assert(MonoTime.currTime - start >= 40.msecs);
 
+    // Duration.max waits without limit (the deadline must not overflow)
+    {
+        import core.thread : Thread;
+
+        PoolOptions forever;
+        forever.maxConnections = 1;
+        forever.waitTimeout = Duration.max;
+        auto f = TestPool.create(forever);
+        auto held = f.pool.acquire();
+        void releaseLater()
+        {
+            Thread.sleep(30.msecs);
+            held.release();
+        }
+
+        auto releaser = (() @trusted => new Thread(&releaseLater).start())();
+        auto next = f.pool.acquire();
+        assert(fake(next).id == 1);
+        (() @trusted => releaser.join())();
+    }
+
     // Busy and closed connections are closed when returned, not reused
     fake(a).busy = true;
     a.release();
@@ -611,6 +645,15 @@ version (unittest)
     {
         auto a = t.pool.acquire();
         assert(fake(a).id == 2 && !t.opened[0].open);
+        fake(a).interruptPing = true;
+    }
+    // Other exceptions reach the caller; the connection is closed, not reused
+    {
+        import std.exception : collectException;
+
+        const e = collectException(t.pool.acquire());
+        assert(e !is null && e.msg == "interrupted" && cast(const ClientException) e is null);
+        assert(!t.opened[1].open && t.pool.activeConnections == 0 && t.pool.idleConnections == 0);
     }
 
     // Idle connections expire; old connections are not reused

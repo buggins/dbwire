@@ -169,12 +169,42 @@ struct Decimal
         return format(true);
     }
 
-    /// The value as a `double` (rounded to the nearest).
-    double toDouble() const @safe
+    /// The value as a `double`, correctly rounded (to the nearest, ties to even);
+    /// infinite beyond the range of `double`.
+    double toDouble() const @safe pure
     {
-        import std.conv : to;
+        import core.bitop : bsr;
+        import std.math : ldexp;
 
-        return toFixedString().to!double;
+        auto n = unscaled.toBigInt();
+        if (n == 0)
+            return 0.0;
+        const negative = n < 0;
+        if (negative)
+            n = -n;
+        // value = n / d, both integers
+        auto d = BigInt(1);
+        if (scale > 0)
+            d = BigInt(10) ^^ scale;
+        else
+            n *= BigInt(10) ^^ -scale;
+        // Scale by 2^k so that the quotient has 56 or 57 bits: 53 for the result, the
+        // rest and the remainder decide the rounding
+        const k = 56 - cast(long) bitLength(n) + cast(long) bitLength(d);
+        if (k >= 0)
+            n <<= k;
+        else
+            d <<= -k;
+        const q = (n / d).getDigit!ulong(0); // below 2^57
+        const sticky = n % d != 0;
+        const drop = bsr(q) + 1 - 53; // 3 or 4
+        ulong mantissa = q >> drop;
+        const rest = q & ((1UL << drop) - 1);
+        const half = 1UL << (drop - 1);
+        if (rest > half || (rest == half && (sticky || (mantissa & 1))))
+            mantissa++;
+        const result = ldexp(cast(double) mantissa, cast(int)(drop - k));
+        return negative ? -result : result;
     }
 
     /++
@@ -404,6 +434,16 @@ private NumberParts splitNumber(scope return const(char)[] text) @safe
     return parts;
 }
 
+/// Number of significant bits of `value`, which is not negative.
+private size_t bitLength(const BigInt value) @safe pure nothrow
+{
+    import core.bitop : bsr;
+
+    const words = value.ulongLength;
+    const top = value.getDigit!ulong(words - 1);
+    return top == 0 ? 0 : (words - 1) * 64 + bsr(top) + 1;
+}
+
 private void checkScale(long scale) @safe pure
 {
     if (scale > maxDecimalScale || scale < -maxDecimalScale)
@@ -486,6 +526,18 @@ private string toText(T)(T value) @safe
     assert(Decimal.fromString("1.50").toHash() == Decimal.fromString("1.5").toHash());
     assert(Decimal.fromDouble(0.1, 2).toString() == "0.1" && Decimal.fromDouble(-2.675, 2).toString() == "-2.67");
     assert(Decimal.fromString("-2.25").toDouble() == -2.25);
+    assert(Decimal.fromString("0").toDouble() == 0 && Decimal.fromString("0.1").toDouble() == 0.1);
+    // Correctly rounded where parsing the text went 1 ulp off (to!double, and the compiler for the
+    // decimal literal: both give 0x1.dec0290b0075ep+112)
+    assert(Decimal.fromString("9710216299933997739814797659952605.8").toDouble() == 0x1.dec0290b0075dp+112);
+    // Ties go to even: 2^53 + 1 and 2^53 + 3 lie halfway between doubles
+    assert(Decimal.fromString("9007199254740993").toDouble() == 9_007_199_254_740_992.0);
+    assert(Decimal.fromString("9007199254740995").toDouble() == 9_007_199_254_740_996.0);
+    assert(Decimal.fromString("9007199254740993.000001").toDouble() == 9_007_199_254_740_994.0);
+    // The extremes: 10^330 is beyond double, 10^-255 within
+    assert(Decimal.fromBigInt(-BigInt(10) ^^ 75, -maxDecimalScale).toDouble() == -double.infinity);
+    const tiny = Decimal(Int256(1), maxDecimalScale).toDouble();
+    assert(tiny > 0.99e-255 && tiny < 1.01e-255);
     assertThrown!ClientException(Decimal.fromDouble(double.nan, 2));
     assertThrown!ClientException(Decimal.fromDouble(-double.infinity, 2));
 }
@@ -595,4 +647,24 @@ private string toText(T)(T value) @safe
             .toString() == "0");
     assert(Decimal.fromDouble(123_456.75, 1, M.halfEven).toString() == "123456.8");
     assert(Decimal.fromDouble(double.max, -maxDecimalScale).precision == 54);
+}
+
+// toDouble against glibc's strtod, which rounds correctly
+version (CRuntime_Glibc) @safe unittest
+{
+    import core.stdc.stdlib : strtod;
+    import std.random : Mt19937, uniform;
+    import std.string : toStringz;
+
+    auto rng = Mt19937(42);
+    foreach (_; 0 .. 20_000)
+    {
+        char[] digits;
+        foreach (i; 0 .. uniform(1, maxDecimalDigits + 1, rng))
+            digits ~= cast(char)('0' + uniform(0, 10, rng));
+        const d = Decimal.fromBigInt(BigInt(digits.idup), uniform(-40, 80, rng));
+        const text = d.toString();
+        const expected = (() @trusted => strtod(text.toStringz, null))();
+        assert(d.toDouble() == expected, text);
+    }
 }
