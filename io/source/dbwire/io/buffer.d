@@ -46,6 +46,10 @@ struct StringArena
     private ubyte[] chunk;
     private size_t used;
 
+    // A copy would hand out the same regions again and overwrite strings already
+    // returned, which readExactString casts to immutable: pass the arena by ref.
+    @disable this(this);
+
     /// A fresh region of `length` bytes, to be filled by the caller.
     ubyte[] take()(size_t length) @safe pure nothrow
     {
@@ -628,6 +632,7 @@ ubyte[T.sizeof] toBigEndian(T)(T value) @safe pure nothrow @nogc if (isFixedWire
         got ~= r.readExactString(r.readFixed!uint(), arena);
     assert(got == values);
     assert((() @trusted => got[1].ptr + 1 == got[2].ptr)()); // consecutive short values share a buffer
+    static assert(!__traits(compiles, { StringArena a; auto b = a; })); // a copy would reuse regions
 
     auto limited = new MockTransport;
     limited.feed(cast(const(ubyte)[]) "too long");

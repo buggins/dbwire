@@ -180,7 +180,9 @@ final class VibeBackend : IoBackend, UnixSocketBackend
         import std.conv : to;
 
         try
-            return new VibeTransport(connectTCP(host, port, null, 0, timeout));
+            return new VibeTransport(connectTCP(host, port, null, 0, unlimitedIfZero(timeout)));
+        catch (InterruptException e)
+            throw e; // the task was interrupted: not a reason to try the next host
         catch (Exception e)
             throw new ConnectionException("Cannot connect to " ~ host ~ ":" ~ port.to!string ~ ": " ~ e.msg);
     }
@@ -225,7 +227,7 @@ final class VibeBackend : IoBackend, UnixSocketBackend
                 scope (exit)
                     removeFile(localFile);
             try
-                return new VibeTransport(connectTCP(address, local, timeout), true);
+                return new VibeTransport(connectTCP(address, local, unlimitedIfZero(timeout)), true);
             catch (InterruptException e)
                 throw e;
             catch (Exception e)
@@ -408,4 +410,10 @@ version (Windows)
 private Thread currentThread() @trusted nothrow
 {
     return Thread.getThis(); // returns the current thread object; no unsafe memory access
+}
+
+// vibe-core's connectTCP takes Duration.max for no limit; our backends also accept zero
+private Duration unlimitedIfZero(Duration timeout) @safe pure nothrow @nogc
+{
+    return timeout == Duration.zero ? Duration.max : timeout;
 }

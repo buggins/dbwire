@@ -265,7 +265,8 @@ private struct Reader
         h.timeCount = cast(uint) bigEndian(4);
         h.typeCount = cast(uint) bigEndian(4);
         h.charCount = cast(uint) bigEndian(4);
-        if (h.typeCount == 0 || (h.isUtCount != 0 && h.isUtCount != h.typeCount)
+        // transition types are one-byte indexes, so more than 256 types can't be used
+        if (h.typeCount == 0 || h.typeCount > 256 || (h.isUtCount != 0 && h.isUtCount != h.typeCount)
                 || (h.isStdCount != 0 && h.isStdCount != h.typeCount))
             throw malformed("invalid counts");
         if (h.leapCount != 0)
@@ -273,23 +274,32 @@ private struct Reader
         return h;
     }
 
-    // the length of a data block with times of `timeSize` bytes
-    static size_t blockLength(const Header h, size_t timeSize) pure nothrow
+    // the length of a data block with times of `timeSize` bytes; in ulong, as the
+    // counts come from the file and the products would overflow uint (or a 32-bit size_t)
+    static ulong blockLength(const Header h, size_t timeSize) pure nothrow
     {
-        return h.timeCount * timeSize + h.timeCount + h.typeCount * 6 + h.charCount
+        return h.timeCount * ulong(
+                timeSize) + h.timeCount + h.typeCount * 6UL + h.charCount
             + h.leapCount * (
-                    timeSize + 4) + h.isStdCount + h.isUtCount;
+                    timeSize + 4UL) + h.isStdCount + h.isUtCount;
+    }
+
+    // throws unless the data block is complete, before anything is allocated for it
+    void checkBlock(const Header h, size_t timeSize) const pure
+    {
+        if (blockLength(h, timeSize) > data.length - at)
+            throw malformed("truncated");
     }
 
     void skipBlock(const Header h, size_t timeSize) pure
     {
-        take(blockLength(h, timeSize));
+        checkBlock(h, timeSize);
+        at += cast(size_t) blockLength(h, timeSize);
     }
 
     Block block(const Header h, size_t timeSize) pure
     {
-        if (blockLength(h, timeSize) > data.length - at)
-            throw malformed("truncated");
+        checkBlock(h, timeSize);
         Block b;
         b.transitions = new long[h.timeCount];
         foreach (ref t; b.transitions)
@@ -612,5 +622,15 @@ unittest
     header[39] = 1; // one type, but no data
     assertThrown!ClientException(TzifTimeZone.parse("x", header[]));
     header[31] = 1; // a leap second record: not supported
+    assertThrown!ClientException(TzifTimeZone.parse("x", header[]));
+    header[31] = 0;
+    header[36 .. 40] = [0x00, 0x00, 0x01, 0x01]; // 257 types: more than one-byte indexes can address
+    assertThrown!ClientException(TzifTimeZone.parse("x", header[]));
+    // Huge counts must throw "truncated" before anything is allocated for them
+    header[36 .. 40] = [0x00, 0x00, 0x01, 0x00];
+    header[32 .. 36] = [0x2A, 0xAA, 0xAA, 0xAB]; // timecnt
+    assertThrown!ClientException(TzifTimeZone.parse("x", header[]));
+    header[32 .. 36] = 0;
+    header[40 .. 44] = [0xFF, 0xFF, 0xFF, 0xFF]; // charcnt
     assertThrown!ClientException(TzifTimeZone.parse("x", header[]));
 }

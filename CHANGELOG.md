@@ -6,6 +6,44 @@ All notable changes to dbwire are documented here. The format follows
 
 ## Unreleased
 
+### Added
+
+- `dbwire:client` (#48): `redactPassword(dsn)`, the connection string with
+  its password replaced by `***`, for error messages and logs.
+
+### Changed
+
+- `dbwire:io` (#48): `StringArena` can't be copied any more (`@disable
+  this(this)`): a copy handed out the same memory again and overwrote strings
+  already returned. Pass it by `ref`.
+- `dbwire:io` (#48): `IoBackend.connect` and `TransportFactory` take
+  `Duration.zero` or `Duration.max` for no time limit (zero used to fail at
+  once). Longer timeouts than 50 years are cut to 50 years.
+- `dbwire:crypto` (#48): `pbkdf2` throws `ClientException` for 0 iterations
+  (an `assert` before; the count often comes from the server).
+
+### Fixed
+
+- `dbwire:types` (#48): a TZif header with huge counts made
+  `TzifTimeZone.parse` allocate gigabytes before it found the data truncated;
+  more than 256 local time types are rejected.
+- `dbwire:types` (#48): `Decimal.toDouble` is correctly rounded. It parsed
+  the decimal text, which could be 1 ulp off.
+- `dbwire:io` (#48): `PhobosBackend.connect` tries the next address (and
+  `connectFirst` the next host) when a socket can't be created, e.g. for IPv6
+  on a host without it.
+- `dbwire:io` (#48): `VibeBackend.connect` lets an interrupted task's
+  `InterruptException` through instead of trying the next host.
+- `dbwire:client` (#48): `Dsn.parse` and `PoolOptions.fromDsn` no longer
+  quote the password in error messages.
+- `dbwire:client` (#48): `PoolOptions.waitTimeout = Duration.max` timed out at
+  once (the deadline overflowed). A ping that fails with something other than
+  a `DbException` (e.g. an interrupted task) closes the connection and
+  reaches the caller, instead of being taken for a dead connection.
+- `dbwire:tls` (#48): a `TlsContext` that fails to load its certificates,
+  keys or CRLs frees its OpenSSL context. In fiber mode, error messages take
+  OpenSSL's reasons before other connections on the thread can replace them.
+
 ## 0.8.0 — 2026-11-07
 
 ### Added

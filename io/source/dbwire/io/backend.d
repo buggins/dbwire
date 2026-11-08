@@ -10,10 +10,23 @@ License:   $(LINK2 https://www.boost.org/LICENSE_1_0.txt, Boost License 1.0).
 +/
 module dbwire.io.backend;
 
-import core.time : Duration;
+import core.time : days, Duration;
 
 import dbwire.exception : ClientException;
 import dbwire.io.transport : Transport, WaitableTransport;
+
+/++
+The longest wait the backends and the pool use (50 years). Longer timeouts,
+`Duration.max` included, are cut to it, so that deadlines (`MonoTime` plus a
+timeout) and `select`'s 32-bit seconds on Windows can't overflow.
++/
+package(dbwire) enum Duration longestWait = days(50 * 365);
+
+/// `timeout`, cut to `longestWait`.
+package(dbwire) Duration clampWait(Duration timeout) @safe pure nothrow @nogc
+{
+    return timeout > longestWait ? longestWait : timeout;
+}
 
 /// Which I/O backend a connection uses.
 enum IoMode
@@ -35,7 +48,8 @@ interface IoBackend
     @property string name() const @safe pure nothrow;
 
     /++
-    Opens a connection to `host`:`port`.
+    Opens a connection to `host`:`port`, giving up after `timeout`
+    (`Duration.zero` or `Duration.max`: without limit).
 
     Throws: `dbwire.exception.ConnectionException` on failure or timeout.
     +/
@@ -200,7 +214,7 @@ bool waitForData(Transport transport, Duration timeout, IoBackend backend) @safe
     if (transport.dataAvailable())
         return true;
     const forever = timeout == Duration.max;
-    const deadline = forever ? MonoTime.max : MonoTime.currTime + timeout;
+    const deadline = forever ? MonoTime.max : MonoTime.currTime + clampWait(timeout);
     auto pause = 1.msecs;
     PoolSync sync;
     for (;;)
