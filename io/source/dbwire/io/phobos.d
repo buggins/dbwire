@@ -118,7 +118,7 @@ final class PhobosTransport : Transport, WaitableTransport, PeerCredentials
     override bool connected() const @safe nothrow
     {
         try
-            return (() @trusted => (cast() socket).isAlive)(); // isAlive is not const in Phobos
+            return socket.isAlive;
         catch (Exception)
             return false;
     }
@@ -239,31 +239,32 @@ final class ThreadPoolSync : PoolSync
     private Condition condition;
 
     /// Creates an unlocked lock.
-    this() @trusted
+    this() @safe
     {
-        // core.sync constructors are not annotated @safe; creating them is memory-safe
         mutex = new Mutex;
         condition = new Condition(mutex);
     }
 
-    override void lock() @trusted
+    override void lock() @safe
     {
         mutex.lock();
     }
 
-    override void unlock() @trusted
+    override void unlock() @safe
     {
         mutex.unlock();
     }
 
     override bool wait(Duration timeout) @trusted
     {
+        // core.sync doesn't mark wait @safe; it only blocks on the condition and its own
+        // mutex, which this object owns
         return condition.wait(timeout);
     }
 
     override void notifyAll() @trusted
     {
-        condition.notifyAll();
+        condition.notifyAll(); // not marked @safe either; it only wakes the waiting threads
     }
 }
 
@@ -275,18 +276,17 @@ final class ThreadLock : IoLock
     private Mutex mutex;
 
     /// Creates an unlocked lock.
-    this() @trusted
+    this() @safe
     {
-        // the core.sync constructor is not annotated @safe; creating a mutex is memory-safe
         mutex = new Mutex;
     }
 
-    override void lock() @trusted
+    override void lock() @safe
     {
         mutex.lock();
     }
 
-    override void unlock() @trusted
+    override void unlock() @safe
     {
         mutex.unlock();
     }

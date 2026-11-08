@@ -10,6 +10,7 @@ module app;
 import core.thread : Thread;
 import core.time : Duration, MonoTime, msecs, seconds;
 import std.socket : InternetAddress, Socket, SocketOption, SocketOptionLevel, SocketShutdown, TcpSocket;
+import std.exception : collectException;
 import std.stdio : stderr, stdout, writefln;
 
 import vibe.core.core : exitEventLoop, runEventLoop, runTask, sleep;
@@ -43,7 +44,12 @@ int main()
         try
             failures += runAll();
         catch (Exception e)
+        {
+            import std.exception : assumeWontThrow;
+
+            report("FAIL: %s", e.msg).assumeWontThrow;
             failures++;
+        }
     }
 
     runTask(&runTests);
@@ -230,7 +236,11 @@ private void testRoundTrip()
     }
 
     auto server = new TestServer(&echo);
+    scope (exit)
+        server.stop();
     auto transport = server.connect();
+    scope (exit)
+        transport.close();
     check(transport.connected, "not connected");
     transport.write([1, 2, 3]);
     check(!transport.dataAvailable, "data available before the server replied");
@@ -241,8 +251,6 @@ private void testRoundTrip()
     foreach (i; 0 .. 3)
         check(transport.dataAvailable, "data no longer available");
     check(readSome(transport, 3) == [1, 2, 3], "echo differs");
-    transport.close();
-    server.stop();
 }
 
 private void testUnixSockets()
@@ -310,12 +318,8 @@ private void testUnixSockets()
             sleep(5.msecs);
         check(!thread.isRunning, "the test server did not finish");
 
-        bool refused;
-        try
-            connectUnixSocket(backend, "\0dbwire-abstract", 5.seconds);
-        catch (ClientException)
-            refused = true;
-        check(refused, "an abstract socket was not refused in fiber mode");
+        check(collectException!ClientException(connectUnixSocket(backend, "\0dbwire-abstract", 5.seconds)) !is null,
+                "an abstract socket was not refused in fiber mode");
     }
 }
 
@@ -327,11 +331,13 @@ private void testEndOfStream()
     }
 
     auto server = new TestServer(&closeAtOnce);
+    scope (exit)
+        server.stop();
     auto transport = server.connect();
+    scope (exit)
+        transport.close();
     auto buffer = new ubyte[8];
     check(transport.read(buffer) == 0, "read after the server closed did not return 0");
-    transport.close();
-    server.stop();
 }
 
 private void testReceiveTimeout()
@@ -343,7 +349,11 @@ private void testReceiveTimeout()
     }
 
     auto server = new TestServer(&silent);
+    scope (exit)
+        server.stop();
     auto transport = server.connect();
+    scope (exit)
+        transport.close();
     transport.setTimeouts(200.msecs, Duration.zero);
     const start = MonoTime.currTime;
     bool timedOut;
@@ -354,8 +364,6 @@ private void testReceiveTimeout()
     const elapsed = MonoTime.currTime - start;
     check(timedOut, "no ConnectionException on timeout");
     check(elapsed >= 150.msecs && elapsed < 3.seconds, "timeout took " ~ elapsed.toString());
-    transport.close();
-    server.stop();
 }
 
 private void testWaitForData()
@@ -373,7 +381,11 @@ private void testWaitForData()
     }
 
     auto server = new TestServer(&lateReply);
+    scope (exit)
+        server.stop();
     auto transport = server.connect();
+    scope (exit)
+        transport.close();
     auto waitable = cast(WaitableTransport) transport;
     check(waitable !is null && waitable.canWaitForData, "the vibe transport can't wait");
     // another task runs while this one waits
@@ -399,8 +411,6 @@ private void testWaitForData()
     ticker.join();
     check(ticks == 5, "the other task did not run while waiting");
     check(readSome(transport, 1) == [7], "reply differs");
-    transport.close();
-    server.stop();
 }
 
 private void testRefused()
@@ -411,12 +421,8 @@ private void testRefused()
     const port = (cast(InternetAddress) probe.localAddress).port;
     scope (exit)
         probe.close();
-    bool refused;
-    try
-        backendFor(IoMode.auto_).connect("127.0.0.1", port, 5.seconds);
-    catch (ConnectionException)
-        refused = true;
-    check(refused, "no ConnectionException for a refused connection");
+    check(collectException!ConnectionException(backendFor(IoMode.auto_).connect("127.0.0.1", port, 5.seconds)) !is null,
+            "no ConnectionException for a refused connection");
 }
 
 private void testConcurrentReads()
@@ -431,9 +437,17 @@ private void testConcurrentReads()
 
     // Two tasks wait for replies that take 300 ms each: together about 300 ms, not 600
     auto first = new TestServer(&slowReply);
+    scope (exit)
+        first.stop();
     auto second = new TestServer(&slowReply);
+    scope (exit)
+        second.stop();
     auto a = first.connect();
+    scope (exit)
+        a.close();
     auto b = second.connect();
+    scope (exit)
+        b.close();
     bool okA, okB;
     const start = MonoTime.currTime;
     void readA() nothrow
@@ -461,10 +475,6 @@ private void testConcurrentReads()
     const elapsed = MonoTime.currTime - start;
     check(okA && okB, "a reply is missing");
     check(elapsed < 550.msecs, "the reads ran one after the other: " ~ elapsed.toString());
-    a.close();
-    b.close();
-    first.stop();
-    second.stop();
 }
 
 private void testInterrupt()
@@ -477,7 +487,11 @@ private void testInterrupt()
 
     // Task.interrupt while waiting for data: InterruptException, not a ConnectionException
     auto server = new TestServer(&silent);
+    scope (exit)
+        server.stop();
     auto transport = server.connect();
+    scope (exit)
+        transport.close();
     string outcome;
     void read() nothrow
     {
@@ -497,8 +511,6 @@ private void testInterrupt()
     reader.interrupt();
     reader.join();
     check(outcome == "interrupted", "outcome: " ~ outcome);
-    transport.close();
-    server.stop();
 }
 
 private void testOtherThread()
@@ -511,7 +523,11 @@ private void testOtherThread()
 
     // A fiber-mode transport belongs to the thread that opened it
     auto server = new TestServer(&silent);
+    scope (exit)
+        server.stop();
     auto transport = server.connect();
+    scope (exit)
+        transport.close();
     string outcome;
     auto thread = new Thread({
         try
@@ -527,8 +543,6 @@ private void testOtherThread()
     thread.start();
     thread.join();
     check(outcome == "refused", "outcome: " ~ outcome);
-    transport.close();
-    server.stop();
 }
 
 private void testYield()
@@ -705,12 +719,7 @@ private void testPoolTasks()
     auto small = new PoolCore(options, IoMode.auto_, &open);
     auto held = small.acquire();
     check(held.connection() !is null, "no connection");
-    bool timedOut;
-    try
-        small.acquire();
-    catch (ClientException)
-        timedOut = true;
-    check(timedOut, "no timeout waiting for a connection");
+    check(collectException!ClientException(small.acquire()) !is null, "no timeout waiting for a connection");
 }
 
 /// TLS over a fiber-mode transport, verified with the system's trusted

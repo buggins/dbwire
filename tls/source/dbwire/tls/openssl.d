@@ -17,7 +17,9 @@ $(UL
         loaded: macOS aborts processes that load it.)
     $(LI Windows: `libssl-3-x64.dll` (`libssl-3.dll` for 32-bit programs), then
         `libssl-1_1-x64.dll` (`libssl-1_1.dll`), found by the usual DLL search:
-        the program's directory, the system directories, then `PATH`.)
+        the program's directory, the system directories, the current
+        directory, then `PATH`. When the current directory may hold files
+        from others, pass full paths to `loadOpenSsl`.)
 )
 
 Copyright: Copyright © 2026, Vadim Lopatin

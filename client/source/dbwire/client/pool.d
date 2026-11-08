@@ -19,6 +19,7 @@ License:   $(LINK2 https://www.boost.org/LICENSE_1_0.txt, Boost License 1.0).
 +/
 module dbwire.client.pool;
 
+import core.atomic : atomicLoad, atomicStore;
 import core.thread : Thread;
 import core.time : Duration, MonoTime, hours, minutes, seconds;
 
@@ -136,6 +137,9 @@ failover hosts).
 `acquire` hands out a `PoolLease`, which returns the connection when it goes
 out of scope. Connections that are closed, busy, or older than
 `PoolOptions.maxLifetime` when returned are closed instead of reused.
+
+In fiber mode each thread has its own connections, kept as long as the pool:
+use the pool from threads that live as long as it, as vibe.d's worker threads do.
 +/
 final class PoolCore
 {
@@ -145,7 +149,7 @@ final class PoolCore
     private SubPool threadPool;
     private SubPool[Thread] fiberPools;
     private PoolSync fiberPoolsLock;
-    private bool closed;
+    private shared bool closed; // set by close() from any thread
 
     /++
     Creates an empty pool; connections are opened on demand.
@@ -218,7 +222,7 @@ final class PoolCore
     +/
     void close() @safe
     {
-        closed = true;
+        atomicStore(closed, true);
         threadPool.closeIdle();
         fiberPoolsLock.lock();
         SubPool own;
@@ -285,6 +289,10 @@ final class PoolCore
 /++
 A connection taken from a `PoolCore`. It returns the connection to the pool
 when it goes out of scope (or on `release`), and cannot be copied.
+
+Keep a lease on the stack, or in a struct that is: returning the connection
+locks the pool and may allocate, which fails when the garbage collector
+finalizes an object that holds the lease.
 +/
 struct PoolLease
 {
@@ -359,7 +367,7 @@ private final class SubPool
                     sync.unlock();
                 for (;;)
                 {
-                    if (owner.closed)
+                    if (atomicLoad(owner.closed))
                         throw new ClientException("The connection pool is closed");
                     takeExpired(expired);
                     if (idleCount)
@@ -430,7 +438,7 @@ private final class SubPool
         sync.lock();
         const opened = openedAt.get(conn, MonoTime.currTime);
         const tooOld = lifetime != Duration.zero && MonoTime.currTime - opened > lifetime;
-        const reuse = !owner.closed && conn.isOpen && !conn.isBusy && !tooOld;
+        const reuse = !atomicLoad(owner.closed) && conn.isOpen && !conn.isBusy && !tooOld;
         if (reuse)
         {
             if (idleCount == idle.length)
@@ -496,9 +504,9 @@ private final class SubPool
     }
 }
 
-private Thread currentThread() @trusted nothrow
+private Thread currentThread() @safe nothrow
 {
-    return Thread.getThis(); // the current thread object; no unsafe memory access
+    return Thread.getThis();
 }
 
 version (unittest)

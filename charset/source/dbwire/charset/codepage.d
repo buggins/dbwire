@@ -133,7 +133,7 @@ struct CodePage
         foreach (b; bytes)
             length += b < 0x80 ? 1 : high is null ? 4 : high[b - 0x80] < 0x800 ? 2 : 3;
         if (length == bytes.length) // ASCII
-            return (() @trusted => cast(string) bytes.idup)();
+            return cast(string) bytes.idup;
         if (high is null)
             return decodeUtf8Text(bytes);
         auto result = new char[length];

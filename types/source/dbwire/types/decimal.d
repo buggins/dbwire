@@ -343,12 +343,12 @@ struct Decimal
         return text.buffer[pos - 1] == '.' ? dot : pos;
     }
 
-    private static Decimal fromParts(scope const(char)[] text, const NumberParts parts, int scale,
+    private static Decimal fromParts(scope const(char)[] text, scope const NumberParts parts, int scale,
             RoundingMode mode) @safe
     {
         checkScale(scale);
         // Split the digits into those kept at `scale` and those dropped
-        const(char)[] kept, dropped;
+        scope const(char)[] kept, dropped;
         if (scale >= 0)
         {
             if (parts.fraction.length > scale)
@@ -362,9 +362,9 @@ struct Decimal
         else
         {
             const k = -scale;
-            const padded = parts.integer.length < k ? zeros(k - parts.integer.length) ~ parts.integer : parts.integer;
-            kept = padded[0 .. $ - k];
-            dropped = padded[$ - k .. $] ~ parts.fraction;
+            kept = parts.integer.length < k ? zeros(k - parts.integer.length) ~ parts.integer : parts.integer;
+            dropped = kept[$ - k .. $] ~ parts.fraction;
+            kept = kept[0 .. $ - k];
         }
         const up = roundsUp(kept, dropped, mode);
         size_t first;
@@ -377,7 +377,7 @@ struct Decimal
             kept = "0";
         if (!up)
             return Decimal(Int256.fromString((parts.negative ? "-" : "") ~ kept), scale);
-        auto value = BigInt(kept) + 1; // may reach 77 digits: checked by toUnscaled
+        auto value = Int256.fromString(kept).toBigInt() + 1; // may reach 77 digits: checked by toUnscaled
         return Decimal(toUnscaled(parts.negative ? -value : value), scale);
     }
 }
