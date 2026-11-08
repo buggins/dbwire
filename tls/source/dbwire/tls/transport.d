@@ -811,8 +811,10 @@ final class TlsTransport : Transport, WaitableTransport
             sslLock.unlock();
         checkSsl();
         api.errClearError();
-        // With a memory BIO for output, SSL_write consumes all of data or fails
-        if (api.sslWrite(ssl, data.ptr, cast(int) data.length) == cast(int) data.length)
+        // With a memory BIO for output, SSL_write consumes all of data or fails. Lengths
+        // beyond int (never from write's chunks) are cut, which reports a failure.
+        const length = data.length > int.max ? int.max : cast(int) data.length;
+        if (api.sslWrite(ssl, data.ptr, length) == data.length)
             return true;
         reasons = errorQueueText(api);
         return false;
@@ -853,8 +855,10 @@ final class TlsTransport : Transport, WaitableTransport
         scope (exit)
             sslLock.unlock();
         checkSsl();
-        // A memory BIO accepts all the data
-        if (api.bioWrite(rbio, data.ptr, cast(int) data.length) != cast(int) data.length)
+        // A memory BIO accepts all the data. Lengths beyond int (never from fill's
+        // buffer) are cut, which reports a failure.
+        const length = data.length > int.max ? int.max : cast(int) data.length;
+        if (api.bioWrite(rbio, data.ptr, length) != data.length)
             throw new ConnectionException("TLS buffer write failed");
     }
 
@@ -1363,6 +1367,8 @@ unittest
 // An encrypted private key with its password
 unittest
 {
+    import std.exception : assertThrown;
+
     if (!haveOpenSsl())
         return;
     auto options = trustingOptions();
@@ -1376,12 +1382,7 @@ unittest
     assert(pair.serverError is null, pair.serverError.msg);
 
     options.keyPassword = "wrong";
-    bool refused;
-    try
-        new TlsContext(options, false);
-    catch (ClientException e)
-        refused = true;
-    assert(refused, "a wrong key password");
+    assertThrown!ClientException(new TlsContext(options, false), "a wrong key password");
 }
 
 // Client certificates (mutual TLS)
@@ -1890,6 +1891,7 @@ unittest
 {
     import std.algorithm.searching : findSplit;
     import std.conv : to;
+    import std.exception : assertThrown;
     import std.process : environment;
 
     const target = environment.get("DBWIRE_TLS_PUBLIC_HOST", "");
@@ -1909,12 +1911,8 @@ unittest
     // The same server under a name its certificate doesn't cover is rejected
     options.serverName = "wrong.example";
     auto other = backend.connect(host, port, 10.seconds);
-    bool rejected;
-    try
-        new TlsTransport(other, backend, TlsContext.client(options), host, options, 10.seconds).close();
-    catch (ConnectionException e)
-        rejected = true;
-    assert(rejected, "a certificate for the wrong name was accepted");
+    assertThrown!ConnectionException(new TlsTransport(other, backend, TlsContext.client(options), host, options,
+            10.seconds).close(), "a certificate for the wrong name was accepted");
 }
 
 // Contexts are cached per option set; a missing file is a ClientException

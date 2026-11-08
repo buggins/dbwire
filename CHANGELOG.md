@@ -30,6 +30,8 @@ All notable changes to dbwire are documented here. The format follows
 
 ### Changed
 
+- `dbwire:client` (#50): `parseEnumValue` matches the member names without
+  `std.conv` and no longer catches; its attributes are inferred.
 - `dbwire:io` (#48): `StringArena` can't be copied any more (`@disable
   this(this)`): a copy handed out the same memory again and overwrote strings
   already returned. Pass it by `ref`.
@@ -40,6 +42,14 @@ All notable changes to dbwire are documented here. The format follows
   (an `assert` before; the count often comes from the server).
 
 ### Fixed
+
+- `dbwire:types` (#50): builds with `-preview=dip1000` (the whole library now
+  does, on current compilers; CI checks it). TZif data with non-ASCII time
+  zone abbreviations is rejected as malformed (RFC 8536 allows only ASCII).
+- `dbwire:io` (#50): error texts come from `strerror_r` (thread-safe) instead
+  of `strerror`.
+- `dbwire:client` (#50): `PoolCore.close` sets its flag atomically; other
+  threads read it under their own locks.
 
 - `dbwire:types` (#48): a TZif header with huge counts made
   `TzifTimeZone.parse` allocate gigabytes before it found the data truncated;

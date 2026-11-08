@@ -98,35 +98,54 @@ The name of the user with id `uid`, from the system's user database
 
 Throws: `ClientException` if no user has that id, or on Windows.
 +/
-string userName(uint uid) @trusted
+string userName(uint uid) @safe
 {
     version (Posix)
     {
         import core.stdc.errno : ERANGE;
-        import core.sys.posix.pwd : getpwuid_r, passwd;
         import std.conv : to;
-        import std.string : fromStringz;
 
-        // getpwuid_r fills `entry` with pointers into `buffer`; both outlive the call,
-        // and the name is copied before they go away
         auto buffer = new char[1024];
         for (;;)
         {
-            passwd entry;
-            passwd* found;
-            const error = getpwuid_r(uid, &entry, buffer.ptr, buffer.length, &found);
-            if (error == ERANGE && buffer.length < 1 << 20)
+            const user = lookUpUser(uid, buffer);
+            if (user.error == ERANGE && buffer.length < 1 << 20)
             {
                 buffer.length *= 2;
                 continue;
             }
-            if (error != 0 || found is null)
+            if (user.error != 0 || !user.found)
                 throw new ClientException("No user with id " ~ uid.to!string);
-            return entry.pw_name.fromStringz.idup;
+            return user.name;
         }
     }
     else
         throw new ClientException("User ids of local processes are not supported on this platform");
+}
+
+private struct UserLookup
+{
+    int error; // getpwuid_r's result
+    bool found;
+    string name;
+}
+
+/// `getpwuid_r` for `uid`, with `buffer` as its storage.
+version (Posix) private UserLookup lookUpUser(uint uid, scope char[] buffer) @trusted
+{
+    import core.sys.posix.pwd : getpwuid_r, passwd;
+    import std.string : fromStringz;
+
+    // getpwuid_r writes at most buffer.length bytes into buffer and points `entry` into it;
+    // the name is copied before the buffer can go away
+    passwd entry;
+    passwd* result;
+    UserLookup user;
+    user.error = getpwuid_r(uid, &entry, buffer.ptr, buffer.length, &result);
+    user.found = user.error == 0 && result !is null;
+    if (user.found)
+        user.name = entry.pw_name.fromStringz.idup;
+    return user;
 }
 
 /// `path` for messages: an abstract socket's leading zero byte shown as `@`, as Linux tools show it.
@@ -188,12 +207,28 @@ package uint socketPeerUserId(long fd) @trusted
         throw new ClientException("Peer credentials of Unix-domain sockets are not supported on this platform");
 }
 
-private string errorText(int code) @trusted
+version (Posix) private string errorText(int code) @trusted
 {
-    import core.stdc.string : strerror;
+    import core.stdc.string : strerror_r;
     import std.string : fromStringz;
 
-    return strerror(code).fromStringz.idup; // strerror returns a static, zero-terminated message
+    // strerror_r writes at most buffer.length bytes, zero-terminated (strerror isn't thread-safe)
+    char[256] buffer;
+    version (CRuntime_Glibc)
+        enum gnuVersion = true;
+    else version (CRuntime_UClibc)
+        enum gnuVersion = true;
+    else
+        enum gnuVersion = false;
+    static if (gnuVersion)
+        return strerror_r(code, buffer.ptr, buffer.length).fromStringz.idup; // the message: in buffer or static
+    else
+    {
+        import std.conv : to;
+
+        return strerror_r(code, buffer.ptr, buffer.length) == 0 ? buffer.ptr.fromStringz.idup
+            : "error " ~ code.to!string;
+    }
 }
 
 @safe unittest

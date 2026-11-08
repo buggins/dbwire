@@ -134,7 +134,7 @@ final class TzifTimeZone : TimeZone
     }
 
     /// The local time type at the Unix time `t` (seconds).
-    LocalTimeType typeAt(long t) const pure nothrow
+    LocalTimeType typeAt(long t) const return scope pure nothrow
     {
         if (transitions.length == 0)
             return footer.valid ? footer.typeAt(t) : types[0];
@@ -217,17 +217,17 @@ private struct Reader
     const(ubyte)[] data;
     size_t at;
 
-    @property bool remaining() const pure nothrow
+    @property bool remaining() const scope pure nothrow
     {
         return at < data.length;
     }
 
-    @property ubyte peek() const pure nothrow
+    @property ubyte peek() const scope pure nothrow
     {
         return data[at];
     }
 
-    const(ubyte)[] take(size_t n) pure
+    const(ubyte)[] take(size_t n) return scope pure
     {
         if (n > data.length - at)
             throw malformed("truncated");
@@ -236,7 +236,7 @@ private struct Reader
         return bytes;
     }
 
-    long bigEndian(size_t n) pure
+    long bigEndian(size_t n) scope pure
     {
         const bytes = take(n);
         ulong v;
@@ -245,7 +245,7 @@ private struct Reader
         return n == 4 ? cast(long) cast(int) cast(uint) v : cast(long) v;
     }
 
-    Header header() pure
+    Header header() scope pure
     {
         const magic = take(4);
         if (magic != cast(const(ubyte)[]) "TZif")
@@ -285,19 +285,19 @@ private struct Reader
     }
 
     // throws unless the data block is complete, before anything is allocated for it
-    void checkBlock(const Header h, size_t timeSize) const pure
+    void checkBlock(const Header h, size_t timeSize) const scope pure
     {
         if (blockLength(h, timeSize) > data.length - at)
             throw malformed("truncated");
     }
 
-    void skipBlock(const Header h, size_t timeSize) pure
+    void skipBlock(const Header h, size_t timeSize) scope pure
     {
         checkBlock(h, timeSize);
         at += cast(size_t) blockLength(h, timeSize);
     }
 
-    Block block(const Header h, size_t timeSize) pure
+    Block block(const Header h, size_t timeSize) scope pure
     {
         checkBlock(h, timeSize);
         Block b;
@@ -330,7 +330,11 @@ private struct Reader
                 throw malformed("invalid local time type");
             size_t end = t.abbreviationIndex;
             while (end < chars.length && chars[end] != 0)
+            {
+                if (chars[end] >= 0x80)
+                    throw malformed("non-ASCII time zone abbreviation"); // RFC 8536: ASCII only
                 end++;
+            }
             b.types[i] = LocalTimeType(t.offset, t.isDst, cast(string) chars[t.abbreviationIndex .. end].idup);
         }
         take(h.leapCount * (timeSize + 4) + h.isStdCount + h.isUtCount); // leap seconds, indicators: unused
@@ -504,7 +508,7 @@ private struct PosixRule
         return r;
     }
 
-    LocalTimeType typeAt(long t) const pure nothrow
+    LocalTimeType typeAt(long t) const return scope pure nothrow
     {
         const std = LocalTimeType(stdOffset, false, stdAbbreviation);
         if (!hasDst)
@@ -633,4 +637,13 @@ unittest
     header[32 .. 36] = 0;
     header[40 .. 44] = [0xFF, 0xFF, 0xFF, 0xFF]; // charcnt
     assertThrown!ClientException(TzifTimeZone.parse("x", header[]));
+
+    // A version 1 file with one local time type: abbreviations must be ASCII
+    ubyte[] file = new ubyte[44];
+    file[0 .. 4] = cast(const(ubyte)[]) "TZif";
+    file[39] = 1; // typecnt
+    file[43] = 4; // charcnt
+    file ~= [0, 0, 0, 0, 0, 0]; // UTC+0, not DST, abbreviation at 0
+    assert(TzifTimeZone.parse("x", file ~ cast(const(ubyte)[]) "UTC\0").utcOffsetAt(0) == Duration.zero);
+    assertThrown!ClientException(TzifTimeZone.parse("x", file ~ cast(const(ubyte)[]) "U\xC3C\0"));
 }

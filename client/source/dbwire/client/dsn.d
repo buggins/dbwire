@@ -222,14 +222,12 @@ Parses the name of a member of enum `E`.
 
 Throws: `ClientException` naming `key` if `value` is not a member name.
 +/
-E parseEnumValue(E)(string key, string value) @safe if (is(E == enum))
+E parseEnumValue(E)(string key, string value) if (is(E == enum))
 {
-    import std.conv : ConvException, to;
-
-    try
-        return value.to!E;
-    catch (ConvException)
-        throw new ClientException("Invalid value '" ~ value ~ "' for '" ~ key ~ "'");
+    static foreach (member; __traits(allMembers, E))
+        if (value == member)
+            return __traits(getMember, E, member);
+    throw new ClientException("Invalid value '" ~ value ~ "' for '" ~ key ~ "'");
 }
 
 ///

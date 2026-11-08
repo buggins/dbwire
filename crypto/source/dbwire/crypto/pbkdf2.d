@@ -53,38 +53,31 @@ ubyte[] pbkdf2(H)(scope const(ubyte)[] password, scope const(ubyte)[] salt, uint
     return result;
 }
 
-version (unittest) private ubyte[] unhex(string s) @safe pure
-{
-    import std.conv : to;
-
-    ubyte[] r;
-    for (size_t i = 0; i < s.length; i += 2)
-        r ~= s[i .. i + 2].to!ubyte(16);
-    return r;
-}
-
 ///
-@safe unittest
+@safe pure unittest
 {
+    import std.conv : hexString;
     import std.digest.sha : SHA1, SHA256, SHA512;
+    import std.string : representation;
 
-    alias b = (string s) => cast(const(ubyte)[]) s;
+    alias b = (string s) => s.representation;
     // RFC 6070 (PBKDF2-HMAC-SHA1)
-    assert(pbkdf2!SHA1(b("password"), b("salt"), 1, 20) == unhex("0c60c80f961f0e71f3a9b524af6012062fe037a6"));
-    assert(pbkdf2!SHA1(b("password"), b("salt"), 2, 20) == unhex("ea6c014dc72d6f8ccd1ed92ace1d41f0d8de8957"));
-    assert(pbkdf2!SHA1(b("password"), b("salt"), 4096, 20) == unhex("4b007901b765489abead49d926f721d065a429c1"));
-    assert(pbkdf2!SHA1(b("pass\0word"), b("sa\0lt"), 4096, 16) == unhex("56fa6aa75548099dcc37d7f03425e0c3"));
+    assert(pbkdf2!SHA1(b("password"), b("salt"), 1, 20) == b(hexString!"0c60c80f961f0e71f3a9b524af6012062fe037a6"));
+    assert(pbkdf2!SHA1(b("password"), b("salt"), 2, 20) == b(hexString!"ea6c014dc72d6f8ccd1ed92ace1d41f0d8de8957"));
+    assert(pbkdf2!SHA1(b("password"), b("salt"), 4096, 20) == b(hexString!"4b007901b765489abead49d926f721d065a429c1"));
+    assert(pbkdf2!SHA1(b("pass\0word"), b("sa\0lt"), 4096, 16) == b(hexString!"56fa6aa75548099dcc37d7f03425e0c3"));
     // RFC 7914 §11 (PBKDF2-HMAC-SHA256), two blocks
-    assert(pbkdf2!SHA256(b("passwd"), b("salt"), 1, 64) == unhex(
-            "55ac046e56e3089fec1691c22544b605f94185216dde0465e68b9d57c20dacbc"
-            ~ "49ca9cccf179b645991664b39d77ef317c71b845b1e30bd509112041d3a19783"));
+    enum sha256 = hexString!("55ac046e56e3089fec1691c22544b605f94185216dde0465e68b9d57c20dacbc"
+                ~ "49ca9cccf179b645991664b39d77ef317c71b845b1e30bd509112041d3a19783");
+    assert(pbkdf2!SHA256(b("passwd"), b("salt"), 1, 64) == b(sha256));
     // PBKDF2-HMAC-SHA512 (values from Python's hashlib.pbkdf2_hmac)
-    assert(pbkdf2!SHA512(b("password"), b("salt"), 1, 64) == unhex(
-            "867f70cf1ade02cff3752599a3a53dc4af34c7a669815ae5d513554e1c8cf252"
-            ~ "c02d470a285a0501bad999bfe943c08f050235d7d68b1da55e63f73b60a57fce"));
-    assert(pbkdf2!SHA512(b("passwordPASSWORDpassword"), b("saltSALTsaltSALTsaltSALTsaltSALTsalt"), 4096, 64) == unhex(
-            "8c0511f4c6e597c6ac6315d8f0362e225f3c501495ba23b868c005174dc4ee71"
-            ~ "115b59f9e60cd9532fa33e0f75aefe30225c583a186cd82bd4daea9724a3d3b8"));
+    enum sha512 = hexString!("867f70cf1ade02cff3752599a3a53dc4af34c7a669815ae5d513554e1c8cf252"
+                ~ "c02d470a285a0501bad999bfe943c08f050235d7d68b1da55e63f73b60a57fce");
+    assert(pbkdf2!SHA512(b("password"), b("salt"), 1, 64) == b(sha512));
+    enum sha512Long = hexString!("8c0511f4c6e597c6ac6315d8f0362e225f3c501495ba23b868c005174dc4ee71"
+                ~ "115b59f9e60cd9532fa33e0f75aefe30225c583a186cd82bd4daea9724a3d3b8");
+    assert(pbkdf2!SHA512(b("passwordPASSWORDpassword"), b("saltSALTsaltSALTsaltSALTsaltSALTsalt"), 4096, 64) == b(
+            sha512Long));
 }
 
 @safe unittest

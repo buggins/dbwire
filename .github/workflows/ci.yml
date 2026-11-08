@@ -71,6 +71,17 @@ jobs:
             dub test ":$p"
             echo "::endgroup::"
           done
+      - name: Unit tests with -preview=dip1000
+        if: matrix.os == 'ubuntu-22.04' && (matrix.dc == 'ldc-latest' || matrix.dc == 'dmd-latest')
+        env:
+          DFLAGS: -preview=dip1000 -unittest -g
+          DBWIRE_REQUIRE_OPENSSL: 1
+        run: |
+          for p in $SUBPACKAGES; do
+            echo "::group::dbwire:$p"
+            dub test ":$p"
+            echo "::endgroup::"
+          done
       - name: Fiber-mode tests (vibe-core 2.x)
         timeout-minutes: 10
         env:

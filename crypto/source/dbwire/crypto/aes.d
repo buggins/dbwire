@@ -163,12 +163,13 @@ ubyte[] pkcs7Pad(scope const(ubyte)[] data, size_t blockSize = aesBlockSize) @sa
 }
 
 /++
-`data` without its PKCS#7 padding.
+`data` without its PKCS#7 padding to a multiple of `blockSize` (1 to 255).
 
 Throws: `ClientException` if the padding is invalid.
 +/
 const(ubyte)[] pkcs7Unpad(return scope const(ubyte)[] data, size_t blockSize = aesBlockSize) @safe pure
 {
+    assert(blockSize >= 1 && blockSize <= 255, "PKCS#7 block sizes are 1 to 255");
     if (data.length == 0 || data.length % blockSize != 0)
         throw new ClientException("Invalid PKCS#7 padding");
     const n = data[$ - 1];
@@ -294,34 +295,39 @@ private void invMixColumns(ref ubyte[aesBlockSize] s) @safe pure nothrow @nogc
     }
 }
 
-version (unittest) private ubyte[] unhex(string s) @safe pure
+version (unittest) private const(ubyte)[] bytes(string s) @safe pure nothrow @nogc
 {
-    import std.conv : to;
+    import std.string : representation;
 
-    ubyte[] r;
-    for (size_t i = 0; i < s.length; i += 2)
-        r ~= s[i .. i + 2].to!ubyte(16);
-    return r;
+    return s.representation;
 }
 
 ///
 @safe unittest
 {
+    import std.conv : hexString;
+
     // FIPS-197 Appendix C: one block with AES-128, AES-192 and AES-256
-    const ubyte[16] plain = unhex("00112233445566778899aabbccddeeff")[0 .. 16];
+    const ubyte[16] plain = bytes(hexString!"00112233445566778899aabbccddeeff")[0 .. 16];
     foreach (k; [
-            ["000102030405060708090a0b0c0d0e0f", "69c4e0d86a7b0430d8cdb78070b4c55a"],
-            ["000102030405060708090a0b0c0d0e0f1011121314151617", "dda97ca4864cdfe06eaf70a0ec0d7191"],
-            [
-                "000102030405060708090a0b0c0d0e0f101112131415161718191a1b1c1d1e1f",
-                "8ea2b7ca516745bfeafc49904b496089"
-            ]
-        ])
+        [
+            hexString!"000102030405060708090a0b0c0d0e0f",
+            hexString!"69c4e0d86a7b0430d8cdb78070b4c55a"
+        ],
+        [
+            hexString!"000102030405060708090a0b0c0d0e0f1011121314151617",
+            hexString!"dda97ca4864cdfe06eaf70a0ec0d7191"
+        ],
+        [
+            hexString!"000102030405060708090a0b0c0d0e0f101112131415161718191a1b1c1d1e1f",
+            hexString!"8ea2b7ca516745bfeafc49904b496089"
+        ]
+    ])
     {
-        const aes = Aes(unhex(k[0]));
+        const aes = Aes(bytes(k[0]));
         ubyte[16] block = plain;
         aes.encryptBlock(block);
-        assert(block[] == unhex(k[1]));
+        assert(block[] == bytes(k[1]));
         aes.decryptBlock(block);
         assert(block == plain);
     }
@@ -329,21 +335,22 @@ version (unittest) private ubyte[] unhex(string s) @safe pure
 
 @safe unittest
 {
+    import std.conv : hexString;
     import std.exception : assertThrown;
 
     // NIST SP 800-38A F.2.1 / F.2.5: CBC-AES128 and CBC-AES256, four blocks
-    const ubyte[16] iv = unhex("000102030405060708090a0b0c0d0e0f")[0 .. 16];
-    const plain = unhex("6bc1bee22e409f96e93d7e117393172aae2d8a571e03ac9c9eb76fac45af8e51"
-            ~ "30c81c46a35ce411e5fbc1191a0a52eff69f2445df4f9b17ad2b417be66c3710");
-    const aes128 = Aes(unhex("2b7e151628aed2a6abf7158809cf4f3c"));
+    const ubyte[16] iv = bytes(hexString!"000102030405060708090a0b0c0d0e0f")[0 .. 16];
+    const plain = bytes(hexString!("6bc1bee22e409f96e93d7e117393172aae2d8a571e03ac9c9eb76fac45af8e51"
+            ~ "30c81c46a35ce411e5fbc1191a0a52eff69f2445df4f9b17ad2b417be66c3710"));
+    const aes128 = Aes(bytes(hexString!"2b7e151628aed2a6abf7158809cf4f3c"));
     const c128 = cbcEncrypt(aes128, iv, plain);
-    assert(c128 == unhex("7649abac8119b246cee98e9b12e9197d5086cb9b507219ee95db113a917678b2"
-            ~ "73bed6b8e3c1743b7116e69e222295163ff1caa1681fac09120eca307586e1a7"));
+    assert(c128 == bytes(hexString!("7649abac8119b246cee98e9b12e9197d5086cb9b507219ee95db113a917678b2"
+            ~ "73bed6b8e3c1743b7116e69e222295163ff1caa1681fac09120eca307586e1a7")));
     assert(cbcDecrypt(aes128, iv, c128) == plain);
-    const aes256 = Aes(unhex("603deb1015ca71be2b73aef0857d77811f352c073b6108d72d9810a30914dff4"));
+    const aes256 = Aes(bytes(hexString!"603deb1015ca71be2b73aef0857d77811f352c073b6108d72d9810a30914dff4"));
     const c256 = cbcEncrypt(aes256, iv, plain);
-    assert(c256 == unhex("f58c4c04d6e5f1ba779eabfb5f7bfbd69cfc4e967edb808d679f777bc6702c7d"
-            ~ "39f23369a9d9bacfa530e26304231461b2eb05e2c39be9fcda6c19078c6a9d1b"));
+    assert(c256 == bytes(hexString!("f58c4c04d6e5f1ba779eabfb5f7bfbd69cfc4e967edb808d679f777bc6702c7d"
+            ~ "39f23369a9d9bacfa530e26304231461b2eb05e2c39be9fcda6c19078c6a9d1b")));
     assert(cbcDecrypt(aes256, iv, c256) == plain);
 
     assert(pkcs7Pad([1, 2, 3]).length == 16 && pkcs7Pad([1, 2, 3])[$ - 1] == 13);

@@ -67,8 +67,6 @@ final class VibeTransport : Transport, WaitableTransport, PeerCredentials
         }
         catch (ConnectionException e)
             throw e;
-        catch (ClientException e)
-            throw e;
         catch (InterruptException e)
             throw e; // Task.interrupt(): propagate as is; the connection gets closed
         catch (Exception e)
@@ -311,12 +309,12 @@ final class FiberLock : IoLock
 
     override void lock() @trusted
     {
-        mutex.lock();
+        mutex.lock(); // vibe-core doesn't mark it @safe; it only suspends the task until the mutex is free
     }
 
     override void unlock() @trusted
     {
-        mutex.unlock();
+        mutex.unlock(); // not marked @safe either; it releases the mutex and wakes a waiting task
     }
 }
 
@@ -407,9 +405,9 @@ version (Windows)
     }
 }
 
-private Thread currentThread() @trusted nothrow
+private Thread currentThread() @safe nothrow
 {
-    return Thread.getThis(); // returns the current thread object; no unsafe memory access
+    return Thread.getThis();
 }
 
 // vibe-core's connectTCP takes Duration.max for no limit; our backends also accept zero
