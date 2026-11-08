@@ -174,6 +174,12 @@ final class BufferedReader
     /// Reads a fixed-size big-endian (network order) value.
     T readFixedBE(T)() @safe if (isFixedWireType!T)
     {
+        if (end - pos >= T.sizeof)
+        {
+            const ubyte[T.sizeof] bytes = buffer[pos .. pos + T.sizeof];
+            pos += T.sizeof;
+            return fromBigEndian!T(bytes);
+        }
         ubyte[T.sizeof] bytes;
         readExact(bytes[]);
         return fromBigEndian!T(bytes);
@@ -187,8 +193,10 @@ final class BufferedReader
     +/
     immutable(ubyte)[] readExactBytes()(size_t length) @safe
     {
+        import std.array : uninitializedArray;
+
         checkLength(length);
-        auto data = new ubyte[length];
+        auto data = uninitializedArray!(ubyte[])(length); // filled right away
         readExact(data);
         return (() @trusted => cast(immutable(ubyte)[]) data)(); // data is unique: just allocated
     }

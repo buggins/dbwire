@@ -18,6 +18,7 @@ import dbwire.io.unixsocket : displayPath, PeerCredentials, socketPeerUserId, Un
 final class PhobosTransport : Transport, WaitableTransport, PeerCredentials
 {
     private Socket socket;
+    private SocketSet readable; // for select() on the reading side; created on first use
 
     /// Wraps an already connected socket. The transport takes ownership of it.
     this(Socket socket) @safe
@@ -53,12 +54,21 @@ final class PhobosTransport : Transport, WaitableTransport, PeerCredentials
 
     override bool dataAvailable() @safe
     {
-        auto readable = new SocketSet;
-        readable.add(socket);
+        resetReadable();
         try
             return Socket.select(readable, null, null, Duration.zero) > 0;
         catch (SocketException e)
             throw new ConnectionException("Socket select failed: " ~ e.msg);
+    }
+
+    // `readable` holding just the socket
+    private void resetReadable() @safe
+    {
+        if (readable is null)
+            readable = new SocketSet;
+        else
+            readable.reset();
+        readable.add(socket);
     }
 
     /// Phobos sockets can wait (`select`).
@@ -70,11 +80,9 @@ final class PhobosTransport : Transport, WaitableTransport, PeerCredentials
     /// Waits with `select` until the socket is readable (data or the end of the stream).
     bool waitForData(Duration timeout) @safe
     {
-        auto readable = new SocketSet;
         for (;;)
         {
-            readable.reset();
-            readable.add(socket);
+            resetReadable();
             try
             {
                 int n;

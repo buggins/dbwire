@@ -159,14 +159,16 @@ struct Decimal
     +/
     string toString() const @safe pure nothrow
     {
-        return format(false);
+        Text text;
+        return text.buffer[0 .. format(false, text)].idup;
     }
 
     /// The value with exactly `scale` digits after the point (none if the scale
     /// is not positive), e.g. `"1.50"`.
     string toFixedString() const @safe pure nothrow
     {
-        return format(true);
+        Text text;
+        return text.buffer[0 .. format(true, text)].idup;
     }
 
     /// The value as a `double`, correctly rounded (to the nearest, ties to even);
@@ -281,25 +283,64 @@ struct Decimal
     /// Hash consistent with numeric equality.
     size_t toHash() const @safe nothrow
     {
-        return hashOf(toString());
+        Text text;
+        return hashOf(text.buffer[0 .. format(false, text)]);
     }
 
-    private string format(bool fixed) const @safe pure nothrow
+    // Room for the longest text: a sign, "0.", the zeros a scale adds and all digits
+    private static struct Text
     {
-        auto digits = unscaled.toString();
-        const sign = digits[0] == '-' ? "-" : "";
-        if (sign.length)
+        char[1 + 2 + maxDecimalScale + maxDecimalDigits] buffer;
+    }
+
+    /// Writes the text into `text` and returns its length.
+    private size_t format(bool fixed, ref Text text) const @safe pure nothrow @nogc
+    {
+        char[Int256.maxChars] digitBuffer;
+        const(char)[] digits = digitBuffer[unscaled.formatTo(digitBuffer) .. $];
+        if (digits == "0" && (scale <= 0 || !fixed))
+        {
+            text.buffer[0] = '0';
+            return 1;
+        }
+        size_t pos;
+        void put(scope const(char)[] part) @safe pure nothrow @nogc
+        {
+            text.buffer[pos .. pos + part.length] = part;
+            pos += part.length;
+        }
+
+        void putZeros(size_t count) @safe pure nothrow @nogc
+        {
+            text.buffer[pos .. pos + count] = '0';
+            pos += count;
+        }
+
+        if (digits[0] == '-')
+        {
+            put("-");
             digits = digits[1 .. $];
+        }
         if (scale <= 0)
-            return digits == "0" ? "0" : sign ~ digits ~ zeros(-scale);
-        if (digits.length <= scale)
-            digits = zeros(scale + 1 - digits.length) ~ digits;
-        auto integer = digits[0 .. $ - scale];
-        auto fraction = digits[$ - scale .. $];
+        {
+            put(digits);
+            putZeros(-scale);
+            return pos;
+        }
+        const fractionDigits = cast(size_t) scale;
+        if (digits.length > fractionDigits)
+            put(digits[0 .. $ - fractionDigits]);
+        else
+            put("0");
+        const dot = pos;
+        put(".");
+        if (digits.length < fractionDigits)
+            putZeros(fractionDigits - digits.length);
+        put(digits.length > fractionDigits ? digits[$ - fractionDigits .. $] : digits);
         if (!fixed)
-            while (fraction.length && fraction[$ - 1] == '0')
-                fraction = fraction[0 .. $ - 1];
-        return sign ~ integer ~ (fraction.length ? "." ~ fraction : "");
+            while (text.buffer[pos - 1] == '0')
+                pos--;
+        return text.buffer[pos - 1] == '.' ? dot : pos;
     }
 
     private static Decimal fromParts(scope const(char)[] text, const NumberParts parts, int scale,
@@ -455,9 +496,19 @@ private Int256 toUnscaled(const BigInt value) @safe
 {
     import std.bigint : toDecimalString;
 
-    if (value > maxUnscaledBig || value < -maxUnscaledBig)
-        throw new ClientException("Decimal value has more than 76 digits: " ~ value.toDecimalString());
-    return Int256.fromBigInt(value);
+    ClientException tooLong()
+    {
+        return new ClientException("Decimal value has more than 76 digits: " ~ value.toDecimalString());
+    }
+
+    Int256 result;
+    try
+        result = Int256.fromBigInt(value);
+    catch (ClientException)
+        throw tooLong(); // beyond 256 bits
+    if (result > maxUnscaled || result < minUnscaled)
+        throw tooLong();
+    return result;
 }
 
 /// The largest and smallest unscaled values: ±(10^76 - 1).
@@ -465,26 +516,18 @@ private enum Int256 maxUnscaled = Int256.fromString(nines(maxDecimalDigits));
 /// ditto
 private enum Int256 minUnscaled = Int256.fromString("-" ~ nines(maxDecimalDigits));
 
-private @property BigInt maxUnscaledBig() @safe
-{
-    static BigInt cached; // per thread
-    if (cached == 0)
-        cached = BigInt(nines(maxDecimalDigits));
-    return cached;
-}
-
 private string nines(size_t count) @safe pure nothrow
 {
-    auto s = new char[count];
-    s[] = '9';
-    return s.idup;
+    import std.array : replicate;
+
+    return "9".replicate(count);
 }
 
 private string zeros(size_t count) @safe pure nothrow
 {
-    auto s = new char[count];
-    s[] = '0';
-    return s.idup;
+    import std.array : replicate;
+
+    return "0".replicate(count);
 }
 
 private string toText(T)(T value) @safe

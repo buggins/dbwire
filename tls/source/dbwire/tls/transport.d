@@ -251,6 +251,7 @@ final class TlsTransport : Transport, WaitableTransport
     private ubyte[] input; // buffer for raw reads
     private ubyte[] plainBuffer; // storage for data decrypted by dataAvailable
     private ubyte[] plain; // decrypted data not yet returned by read
+    private ubyte[] cipherOut; // ciphertext being sent; used only while holding writeLock
     private string peerName;
     private bool ended; // the peer closed the stream
     private bool failed; // an operation failed; the stream state is unknown
@@ -857,6 +858,8 @@ final class TlsTransport : Transport, WaitableTransport
             throw new ConnectionException("TLS buffer write failed");
     }
 
+    /// The ciphertext OpenSSL has produced, in `cipherOut`, which grows to the largest
+    /// amount seen. The caller holds `writeLock` and sends it before the next call.
     private ubyte[] takeOutput() @trusted
     {
         sslLock.lock();
@@ -866,9 +869,11 @@ final class TlsTransport : Transport, WaitableTransport
         const pending = api.bioCtrl(wbio, bioCtrlPending, 0, null);
         if (pending <= 0)
             return null;
-        auto output = new ubyte[cast(size_t) pending];
-        const n = api.bioRead(wbio, output.ptr, cast(int) output.length);
-        return n > 0 ? output[0 .. n] : null;
+        if (cipherOut.length < pending)
+            cipherOut = new ubyte[cast(size_t) pending];
+        // reads at most `pending` bytes, which fit in cipherOut
+        const n = api.bioRead(wbio, cipherOut.ptr, cast(int) pending);
+        return n > 0 ? cipherOut[0 .. n] : null;
     }
 
     private void freeSsl() @trusted nothrow

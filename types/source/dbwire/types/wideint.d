@@ -98,8 +98,17 @@ struct WideInt(uint bits, bool signed) if (bits == 128 || bits == 256)
     /// The value in decimal, e.g. `"-170141183460469231731687303715884105728"`.
     string toString() const @safe pure nothrow
     {
+        char[maxChars] buffer;
+        return buffer[formatTo(buffer) .. $].idup;
+    }
+
+    /// Length of the longest decimal text of a value, with its sign.
+    package(dbwire) enum size_t maxChars = bits / 3 + 2;
+
+    /// Writes the decimal text at the end of `buffer` and returns where it starts.
+    package(dbwire) size_t formatTo(ref char[maxChars] buffer) const @safe pure nothrow @nogc
+    {
         uint[2 * wordCount] limbs = magnitude();
-        char[bits / 3 + 2] buffer; // enough for every digit and the sign
         size_t pos = buffer.length;
         for (;;)
         {
@@ -118,7 +127,7 @@ struct WideInt(uint bits, bool signed) if (bits == 128 || bits == 256)
         }
         if (isNegative)
             buffer[--pos] = '-';
-        return buffer[pos .. $].idup;
+        return pos;
     }
 
     /++
@@ -221,16 +230,12 @@ struct WideInt(uint bits, bool signed) if (bits == 128 || bits == 256)
     /// The value as a `std.bigint.BigInt`.
     BigInt toBigInt() const @safe
     {
-        auto result = BigInt(0);
-        foreach_reverse (w; words)
-        {
-            result <<= 64;
-            result += w;
-        }
-        static if (signed)
-            if (isNegative)
-                result -= BigInt(1) << bits;
-        return result;
+        import std.range : retro;
+
+        const negative = isNegative;
+        const abs = negative ? negated() : this; // the minimum negates to itself: its magnitude
+        // a copy: the compiler takes BigInt's range constructor for keeping the range
+        return BigInt(negative, abs.words[].dup.retro);
     }
 
     /++
@@ -240,13 +245,23 @@ struct WideInt(uint bits, bool signed) if (bits == 128 || bits == 256)
     +/
     static WideInt fromBigInt(const BigInt value) @safe
     {
-        if (value < min.toBigInt() || value > max.toBigInt())
-            throw new ClientException("Value out of range for " ~ typeName ~ ": " ~ value.toDecimalString());
-        const unsignedValue = value < 0 ? value + (BigInt(1) << bits) : value;
+        ClientException outOfRange()
+        {
+            return new ClientException("Value out of range for " ~ typeName ~ ": " ~ value.toDecimalString());
+        }
+
+        // BigInt holds a sign and the magnitude, whose words getDigit returns
+        const negative = value < 0;
+        if (value.ulongLength > wordCount || (negative && !signed))
+            throw outOfRange();
         WideInt result;
-        foreach (i; 0 .. wordCount)
-            if (i < unsignedValue.ulongLength)
-                result.words[i] = unsignedValue.getDigit(i);
+        foreach (i; 0 .. value.ulongLength)
+            result.words[i] = value.getDigit!ulong(i);
+        if (negative)
+            result = result.negated();
+        // a magnitude too large for the signed range shows as the wrong sign
+        if (result.isNegative != negative)
+            throw outOfRange();
         return result;
     }
 
@@ -386,6 +401,14 @@ private string toText(T)(T value) @safe pure
     assertThrown!ClientException(UInt128.fromString("-1"));
     assertThrown!ClientException(UInt128.fromString("340282366920938463463374607431768211456"));
     assertThrown!ClientException(Int128.fromBigInt(BigInt(1) << 127));
+    // the edges of each range
+    assert(Int128.fromBigInt(-(BigInt(1) << 127)) == Int128.min && Int128.fromBigInt((BigInt(1) << 127) - 1) == Int128
+            .max);
+    assertThrown!ClientException(Int128.fromBigInt(-(BigInt(1) << 127) - 1));
+    assert(UInt256.fromBigInt((BigInt(1) << 256) - 1) == UInt256.max && UInt256.fromBigInt(BigInt(0)) == UInt256(0));
+    assertThrown!ClientException(UInt256.fromBigInt(BigInt(1) << 256));
+    assertThrown!ClientException(UInt128.fromBigInt(BigInt(-1)));
+    assert(Int256.min.toBigInt() == -(BigInt(1) << 255) && Int256.fromBigInt(Int256.min.toBigInt()) == Int256.min);
     assertThrown!ClientException(UInt128(-1));
 
     // Comparison, conversion to built-in types

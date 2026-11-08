@@ -23,7 +23,7 @@ import core.thread : Thread;
 import core.time : Duration, MonoTime, hours, minutes, seconds;
 
 import dbwire.exception : ClientException, DbException;
-import dbwire.io.backend : clampWait, IoMode, PoolSync, backendFor;
+import dbwire.io.backend : clampWait, IoMode, PoolSync, backendFor, inVibeTask;
 
 /// What the pool needs from a connection.
 interface Poolable
@@ -198,7 +198,7 @@ final class PoolCore
         pool.sync.lock();
         scope (exit)
             pool.sync.unlock();
-        return pool.idle.length;
+        return pool.idleCount;
     }
 
     /// Number of connections handed out to the caller's context and not yet returned.
@@ -231,8 +231,8 @@ final class PoolCore
 
     private SubPool currentSubPool() @safe
     {
-        auto backend = backendFor(ioMode);
-        if (backend.name != "vibe")
+        // the choice backendFor makes, without creating a backend on every call
+        if (ioMode == IoMode.phobos || (ioMode == IoMode.auto_ && !inVibeTask()))
             return threadPool;
         auto self = currentThread();
         fiberPoolsLock.lock();
@@ -240,7 +240,7 @@ final class PoolCore
             fiberPoolsLock.unlock();
         if (auto p = self in fiberPools)
             return *p;
-        auto pool = new SubPool(this, backend.newPoolSync());
+        auto pool = new SubPool(this, backendFor(ioMode).newPoolSync()); // throws without vibe-core
         fiberPools[self] = pool;
         return pool;
     }
@@ -331,7 +331,8 @@ private final class SubPool
 
     PoolCore owner;
     PoolSync sync;
-    Idle[] idle; // most recently returned last
+    Idle[] idle; // idle[0 .. idleCount]: most recently returned last; the rest is room to grow
+    size_t idleCount;
     size_t active;
     MonoTime[Poolable] openedAt;
 
@@ -361,11 +362,11 @@ private final class SubPool
                     if (owner.closed)
                         throw new ClientException("The connection pool is closed");
                     takeExpired(expired);
-                    if (idle.length)
+                    if (idleCount)
                     {
-                        candidate = idle[$ - 1].conn;
-                        idleFor = MonoTime.currTime - idle[$ - 1].since;
-                        idle = idle[0 .. $ - 1];
+                        candidate = idle[idleCount - 1].conn;
+                        idleFor = MonoTime.currTime - idle[idleCount - 1].since;
+                        idle[--idleCount] = Idle.init; // no reference to it left behind
                         active++;
                         break;
                     }
@@ -431,7 +432,11 @@ private final class SubPool
         const tooOld = lifetime != Duration.zero && MonoTime.currTime - opened > lifetime;
         const reuse = !owner.closed && conn.isOpen && !conn.isBusy && !tooOld;
         if (reuse)
-            idle ~= Idle(conn, MonoTime.currTime);
+        {
+            if (idleCount == idle.length)
+                idle.length = idle.length ? idle.length * 2 : 4;
+            idle[idleCount++] = Idle(conn, MonoTime.currTime);
+        }
         else
             openedAt.remove(conn);
         active--;
@@ -445,8 +450,9 @@ private final class SubPool
     void closeIdle() @safe
     {
         sync.lock();
-        auto toClose = idle;
+        auto toClose = idle[0 .. idleCount];
         idle = null;
+        idleCount = 0;
         foreach (entry; toClose)
             openedAt.remove(entry.conn);
         sync.notifyAll();
@@ -472,7 +478,7 @@ private final class SubPool
         const now = MonoTime.currTime;
         const options = owner.poolOptions;
         size_t kept;
-        foreach (entry; idle)
+        foreach (entry; idle[0 .. idleCount])
         {
             const opened = openedAt.get(entry.conn, now);
             if (now - entry.since > options.maxIdleTime
@@ -485,7 +491,8 @@ private final class SubPool
             else
                 idle[kept++] = entry;
         }
-        idle = idle[0 .. kept];
+        idle[kept .. idleCount] = Idle.init;
+        idleCount = kept;
     }
 }
 
