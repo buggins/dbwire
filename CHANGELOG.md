@@ -6,6 +6,12 @@ All notable changes to dbwire are documented here. The format follows
 
 ## Unreleased
 
+### Added
+
+- `dbwire:types` (#61): `shortestDigits(value, Ties.avoid)` never gives text
+  exactly halfway between two values, as PostgreSQL prints floats (Ryu with
+  `acceptBounds = false`). The default `Ties.toEven` is unchanged.
+
 ## 0.9.1 — 2026-11-09
 
 Adds `shortestDigits` for the connectors' float text.
