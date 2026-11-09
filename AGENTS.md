@@ -43,7 +43,7 @@ dbwire must remain pure BSL-1.0 code written for this project.
 ```
 dub.json                    root package "dbwire": source/dbwire/package.d (public imports, version constants);
                             depends on every subpackage; buildType "docs"
-types/   dbwire:types       source/dbwire/exception.d, source/dbwire/types/{decimal,wideint,interval,timezone,tzif}.d
+types/   dbwire:types       source/dbwire/exception.d, source/dbwire/types/{decimal,wideint,interval,timezone,tzif,floattext}.d
                                                                                     no dependencies
 io/      dbwire:io          source/dbwire/io/{transport,backend,phobos,vibecore,unixsocket,buffer,mock}.d
                                                                                     types, vibe-core (optional)

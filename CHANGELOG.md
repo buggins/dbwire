@@ -6,6 +6,14 @@ All notable changes to dbwire are documented here. The format follows
 
 ## Unreleased
 
+### Added
+
+- `dbwire:types` (#57): `shortestDigits`, the shortest decimal digits that
+  read back as a `float` or `double` (the closest ones on a tie), with the
+  position of the decimal point. Moved from clickhoused's float text, where it
+  was checked against about 765k server values; connectors keep their own
+  notation. Moderate magnitudes don't allocate.
+
 ## 0.9.0 — 2026-11-08
 
 The code review (#48–#50): robustness and security fixes, faster charset
