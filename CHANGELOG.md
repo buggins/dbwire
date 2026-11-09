@@ -6,6 +6,10 @@ All notable changes to dbwire are documented here. The format follows
 
 ## Unreleased
 
+## 0.9.1 — 2026-11-09
+
+Adds `shortestDigits` for the connectors' float text.
+
 ### Added
 
 - `dbwire:types` (#57): `shortestDigits`, the shortest decimal digits that
