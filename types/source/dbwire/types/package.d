@@ -7,6 +7,7 @@ $(UL
     $(LI `dbwire.types.wideint`: `Int128`, `UInt128`, `Int256`, `UInt256`.)
     $(LI `dbwire.types.interval`: `MonthInterval`, an interval of years and months.)
     $(LI `dbwire.types.timezone`: `resolveTimeZone`, time zones by name.)
+    $(LI `dbwire.types.floattext`: `shortestDigits`, the shortest decimal digits of a `float` or `double`.)
 )
 
 This subpackage has no dependencies.
@@ -18,6 +19,7 @@ module dbwire.types;
 
 public import dbwire.exception;
 public import dbwire.types.decimal;
+public import dbwire.types.floattext;
 public import dbwire.types.interval;
 public import dbwire.types.timezone;
 public import dbwire.types.tzif;

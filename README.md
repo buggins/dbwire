@@ -21,15 +21,15 @@ and [hibernated](https://github.com/buggins/hibernated).
 
 Depend only on what you need:
 
-| Subpackage       | Contents                                                                      | Dependencies              |
-|------------------|-------------------------------------------------------------------------------|---------------------------|
-| `dbwire:types`   | exceptions, exact decimals, 128/256-bit integers, intervals, time zones       | none                      |
-| `dbwire:io`      | transports and I/O backends: blocking Phobos sockets and vibe.d fibers        | vibe-core (optional)      |
-| `dbwire:tls`     | TLS over any transport, with OpenSSL loaded at run time                       | none at build time        |
-| `dbwire:crypto`  | pure-D AES (CBC), PBKDF2, MD4, secure random for authentication               | none                      |
-| `dbwire:charset` | UTF-16 and the code pages of SQL Server collations (single/double-byte, UTF-8)| none                      |
-| `dbwire:client`  | connection strings, host failover, connection pool core                       | none                      |
-| `dbwire`         | all of the above                                                              |                           |
+| Subpackage       | Contents                                                                       | Dependencies              |
+|------------------|--------------------------------------------------------------------------------|---------------------------|
+| `dbwire:types`   | exceptions, exact decimals, wide integers, intervals, time zones, float digits | none                      |
+| `dbwire:io`      | transports and I/O backends: blocking Phobos sockets and vibe.d fibers         | vibe-core (optional)      |
+| `dbwire:tls`     | TLS over any transport, with OpenSSL loaded at run time                        | none at build time        |
+| `dbwire:crypto`  | pure-D AES (CBC), PBKDF2, MD4, secure random for authentication                | none                      |
+| `dbwire:charset` | UTF-16 and the code pages of SQL Server collations (single/double-byte, UTF-8) | none                      |
+| `dbwire:client`  | connection strings, host failover, connection pool core                        | none                      |
+| `dbwire`         | all of the above                                                               |                           |
 
 For example, in `dub.json`:
 
