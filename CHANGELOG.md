@@ -6,6 +6,10 @@ All notable changes to dbwire are documented here. The format follows
 
 ## Unreleased
 
+## 0.9.2 — 2026-11-09
+
+Adds `Ties.avoid` to `shortestDigits` for PostgreSQL's float text.
+
 ### Added
 
 - `dbwire:types` (#61): `shortestDigits(value, Ties.avoid)` never gives text
