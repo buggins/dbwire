@@ -54,10 +54,35 @@ const(char)[] digits()(ref const ShortestDigits d)
 }
 
 /++
+How text exactly halfway between two neighbouring values reads back; see
+`shortestDigits`.
++/
+enum Ties : ubyte
+{
+    /++
+    As the neighbour with the even mantissa (round half to even), as `strtod`
+    reads it. The shortest digits may then be such a midpoint; ClickHouse
+    writes them.
+    +/
+    toEven,
+    /++
+    Never as the value: the digits are never a midpoint, so they read back
+    whatever rule the reader uses for ties. PostgreSQL writes these for
+    `float4` and `float8` (Ryu with `acceptBounds = false` in its `f2s.c` and
+    `d2s.c`; checked against PostgreSQL 13 and 18), e.g.
+    `-3.6681927456064224e+16` rather than the shorter midpoint
+    `-3.668192745606422e+16`.
+    +/
+    avoid,
+}
+
+/++
 The shortest decimal digits that read back as `value`, with the position of
-the decimal point. Among several shortest digit strings that read back, it
-takes the one closest to `value`, and the even one on a tie. Reading text
-back means rounding to the nearest `T`, ties to even, as `strtod` does.
+the decimal point. Reading text back means rounding to the nearest `T`;
+`ties` says whether text exactly halfway between `value` and a neighbour
+counts as reading back. Among several shortest digit strings that read back,
+it takes the one closest to `value`, and the one with the even last digit if
+two are equally close (in both modes).
 
 The sign is ignored, zero gives the digit `0` with `pointPos` 1, and NaN and
 infinities give no digits: callers write the sign, zero, NaN and infinities
@@ -67,7 +92,8 @@ The result is exact for every value. Moderate magnitudes (nearly every
 `float`, doubles from about 1e-20 to 1e35) run on 128-bit integers and don't
 allocate; the others need `BigInt`, so the function isn't `@nogc`.
 +/
-ShortestDigits shortestDigits(T)(const T value) if (is(T == float) || is(T == double))
+ShortestDigits shortestDigits(T)(const T value, Ties ties = Ties.toEven)
+        if (is(T == float) || is(T == double))
 {
     import std.math : isFinite;
 
@@ -81,7 +107,7 @@ ShortestDigits shortestDigits(T)(const T value) if (is(T == float) || is(T == do
         result.pointPos = 1;
         return result;
     }
-    const input = digitInput(value < 0 ? -value : value);
+    const input = digitInput(value < 0 ? -value : value, ties);
     const generated = generateDigits!U128(input, result) || generateDigits!BigInt(input, result);
     assert(generated, "the digit generation failed");
     return result;
@@ -137,13 +163,13 @@ private struct DigitInput
 {
     ulong f; // mantissa, with the hidden bit
     int e; // binary exponent
-    bool even; // whether `f` is even: ties then read back as the value
+    bool acceptMidpoints; // whether text halfway to a neighbour reads back as the value
     bool narrowBelow; // at a power of two: the gap to the next smaller value is half the one above
     int k; // estimated decimal exponent
 }
 
 /// The `DigitInput` of `value` (positive and finite).
-private DigitInput digitInput(T)(const T value)
+private DigitInput digitInput(T)(const T value, Ties ties)
 {
     import std.math : ceil, log10;
 
@@ -171,7 +197,8 @@ private DigitInput digitInput(T)(const T value)
         input.f |= 1UL << mantissaBits;
         input.e = rep.exponent - bias - mantissaBits;
     }
-    input.even = (input.f & 1) == 0;
+    // Round half to even: the midpoints read back as the value when its mantissa is even
+    input.acceptMidpoints = ties == Ties.toEven && (input.f & 1) == 0;
     // At a power of two the neighbour below is closer: half the gap above
     input.narrowBelow = rep.fraction == 0 && rep.exponent > 1;
     // An estimate of the decimal exponent; the digit generation corrects it exactly
@@ -185,9 +212,9 @@ Generates the digits of `input` with integers of type `N` (`U128` or
 
 This is the free-format digit generation of Steele and White, with exact
 integer arithmetic: `r / s` is the value, `mPlus / s` and `mMinus / s` are
-the distances to the midpoints between the value and its neighbours. Ties
-when reading text round to even, so the midpoints themselves read back as the
-value when its mantissa is even. `U128` covers nearly every `float` and the
+the distances to the midpoints between the value and its neighbours. The
+midpoints themselves count as reading back when `input.acceptMidpoints` is
+set (round half to even and an even mantissa). `U128` covers nearly every `float` and the
 doubles from about 1e-20 to 1e35; both types give the same digits.
 +/
 private bool generateDigits(N)(const DigitInput input, out ShortestDigits result)
@@ -228,13 +255,13 @@ private bool generateDigits(N)(const DigitInput input, out ShortestDigits result
     }
     if (failed())
         return false;
-    bool aboveTop()
+    // Whether `a` reaches the bound `b`: the midpoints count as reading back only with acceptMidpoints
+    bool reaches(const N a, const N b)
     {
-        const top = r + mPlus;
-        return input.even ? top >= s : top > s;
+        return input.acceptMidpoints ? a >= b : a > b;
     }
 
-    while (aboveTop())
+    while (reaches(r + mPlus, s))
     {
         s *= 10;
         k++;
@@ -247,7 +274,7 @@ private bool generateDigits(N)(const DigitInput input, out ShortestDigits result
         static if (is(N == U128))
             if (top.bad)
                 return false;
-        if (input.even ? top >= s : top > s)
+        if (reaches(top, s))
             break;
         r *= 10;
         mPlus *= 10;
@@ -273,8 +300,8 @@ private bool generateDigits(N)(const DigitInput input, out ShortestDigits result
         static if (is(N == U128))
             if (top.bad)
                 return false;
-        const low = input.even ? r <= mMinus : r < mMinus;
-        const high = input.even ? top >= s : top > s;
+        const low = reaches(mMinus, r);
+        const high = reaches(top, s);
         if (!low && !high)
         {
             buffer[count++] = cast(char)('0' + d);
@@ -503,21 +530,24 @@ private bool carry(char[] digits, int pointPos, ref ShortestDigits result) @safe
     import std.math : ldexp;
 
     // The 128-bit path, where it fits, gives exactly the digits of the BigInt path
-    size_t fast;
-    foreach (exponent; -120 .. 130)
-        foreach (j; 1 .. 40)
-        {
-            const value = ldexp(1.0 + j / 41.0, exponent);
-            const input = digitInput(value);
-            ShortestDigits viaU128, viaBigInt;
-            assert(generateDigits!BigInt(input, viaBigInt));
-            if (generateDigits!U128(input, viaU128))
+    foreach (ties; [Ties.toEven, Ties.avoid])
+    {
+        size_t fast;
+        foreach (exponent; -120 .. 130)
+            foreach (j; 0 .. 40)
             {
-                fast++;
-                assert(viaU128 == viaBigInt);
+                const value = ldexp(1.0 + j / 41.0, exponent); // j = 0: powers of two
+                const input = digitInput(value, ties);
+                ShortestDigits viaU128, viaBigInt;
+                assert(generateDigits!BigInt(input, viaBigInt));
+                if (generateDigits!U128(input, viaU128))
+                {
+                    fast++;
+                    assert(viaU128 == viaBigInt);
+                }
             }
-        }
-    assert(fast > 5000); // most of these magnitudes take the fast path
+        assert(fast > 5000); // most of these magnitudes take the fast path
+    }
 
     // U128 arithmetic and overflow detection
     auto x = U128(ulong.max);
@@ -563,25 +593,98 @@ private bool carry(char[] digits, int pointPos, ref ShortestDigits result) @safe
             return strtod(text.ptr, null) == value;
     }
 
+    static void check(T)(const T value)
+    {
+        const d = shortestDigits(value);
+        assert(readBack(d.digits, d.pointPos, is(T == float)) == value);
+        assert(!shorterReadsBack(value, d.length));
+        if (value == T.max)
+            return; // isMidpoint needs the neighbour above
+        // Ties.avoid: never a midpoint, still reads back, and differs only where toEven gives a midpoint
+        const a = shortestDigits(value, Ties.avoid);
+        assert(readBack(a.digits, a.pointPos, is(T == float)) == value);
+        assert(!isMidpoint(a.digits, a.pointPos, value));
+        assert(a == d || (isMidpoint(d.digits, d.pointPos, value) && a.length > d.length));
+    }
+
     auto rng = Mt19937_64(20_261_109);
     foreach (_; 0 .. 20_000)
     {
         const bits = uniform!ulong(rng);
         const value = *cast(const double*)&bits;
-        if (!(value > 0 && value <= double.max))
-            continue;
-        const d = shortestDigits(value);
-        assert(readBack(d.digits, d.pointPos, false) == value);
-        assert(!shorterReadsBack(value, d.length));
+        if (value > 0 && value <= double.max)
+            check(value);
     }
     foreach (_; 0 .. 20_000)
     {
         const bits = uniform!uint(rng);
         const value = *cast(const float*)&bits;
-        if (!(value > 0 && value <= float.max))
-            continue;
-        const d = shortestDigits(value);
-        assert(readBack(d.digits, d.pointPos, true) == value);
-        assert(!shorterReadsBack(value, d.length));
+        if (value > 0 && value <= float.max)
+            check(value);
     }
+    foreach (value; [double.min_normal, double.max, double.min_normal * double.epsilon])
+        check(value);
+    foreach (value; [float.min_normal, float.max, float.min_normal * float.epsilon])
+        check(value);
+
+    // Few random values give a midpoint with toEven; a strided scan of the floats finds a few hundred
+    size_t midpoints;
+    for (ulong bits = 1; bits < 0x7F80_0000; bits += 16_411)
+    {
+        const uint word = cast(uint) bits;
+        const value = *cast(const float*)&word;
+        const d = shortestDigits(value);
+        const a = shortestDigits(value, Ties.avoid);
+        if (a == d)
+            continue;
+        midpoints++;
+        assert(isMidpoint(d.digits, d.pointPos, value) && !isMidpoint(a.digits, a.pointPos, value));
+        assert(a.length > d.length && readBack(a.digits, a.pointPos, true) == value);
+    }
+    assert(midpoints > 100);
+}
+
+// Whether `0.digits × 10^pointPos` is exactly halfway between `value` (positive and below `T.max`, subnormals
+// included) and one of its neighbours.
+version (unittest) private bool isMidpoint(T)(const(char)[] digits, int pointPos, T value)
+{
+    import std.math : nextDown, nextUp;
+
+    assert(value > 0 && value < T.max, "isMidpoint needs a neighbour above");
+
+    foreach (neighbour; [nextDown(value), nextUp(value)])
+    {
+        const x = digitInput(value, Ties.toEven);
+        // Below the smallest subnormal is zero, which digitInput doesn't take
+        const y = neighbour > 0 ? digitInput(neighbour, Ties.toEven) : DigitInput(0, x.e);
+        const e = x.e < y.e ? x.e : y.e;
+        // decimal × 2 against (value + neighbour) = sum × 2^e
+        BigInt left = BigInt(digits) * 2;
+        BigInt right = (BigInt(x.f) << (x.e - e)) + (BigInt(y.f) << (y.e - e));
+        const exponent10 = pointPos - cast(int) digits.length;
+        if (exponent10 >= 0)
+            left *= BigInt(10) ^^ exponent10;
+        else
+            right *= BigInt(10) ^^ -exponent10;
+        if (e >= 0)
+            right <<= e;
+        else
+            left <<= -e;
+        if (left == right)
+            return true;
+    }
+    return false;
+}
+
+@safe unittest
+{
+    // PostgreSQL's example: toEven gives the 16-digit midpoint, avoid the 17 digits the server prints
+    const value = 36_681_927_456_064_224.0;
+    const d = shortestDigits(value);
+    assert(d.digits == "3668192745606422" && d.pointPos == 17 && isMidpoint(d.digits, d.pointPos, value));
+    const a = shortestDigits(-value, Ties.avoid);
+    assert(a.digits == "36681927456064224" && a.pointPos == 17 && !isMidpoint(a.digits, a.pointPos, value));
+    // Most values have the same digits either way
+    assert(shortestDigits(0.1, Ties.avoid) == shortestDigits(0.1));
+    assert(shortestDigits(2.0f ^^ -10, Ties.avoid) == shortestDigits(2.0f ^^ -10));
 }
