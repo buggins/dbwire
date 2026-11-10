@@ -111,12 +111,16 @@ struct Dsn
 }
 
 /++
-`text` with the password in its user info replaced by `***`, e.g.
-`db://user:***@host/db`, for error messages and logs. The parts are found as
-`Dsn.parse` finds them; text without `://` or without a password is returned unchanged.
+`text` with its passwords replaced by `***`, for error messages and logs: the
+one in the user info (`db://user:***@host/db`) and the values of query
+parameters whose name contains `password` or is `pwd` or `passwd`, in any
+case and after percent-decoding (`?password=***`, `wallet_password=***`,
+`sslpassword=***`). The parts are
+found as `Dsn.parse` finds them; text without `://` is returned unchanged.
 +/
 string redactPassword(string text) @safe pure
 {
+    import std.array : split;
     import std.string : indexOf, lastIndexOf;
 
     const scheme = text.indexOf("://");
@@ -130,13 +134,51 @@ string redactPassword(string text) @safe pure
     const slash = text[start .. end].indexOf('/');
     if (slash >= 0)
         end = start + slash;
+    string result = text[0 .. end];
     const at = text[start .. end].lastIndexOf('@');
-    if (at < 0)
-        return text;
-    const colon = text[start .. start + at].indexOf(':');
-    if (colon < 0)
-        return text;
-    return text[0 .. start + colon + 1] ~ "***" ~ text[start + at .. $];
+    if (at >= 0)
+    {
+        const colon = text[start .. start + at].indexOf(':');
+        if (colon >= 0)
+            result = text[0 .. start + colon + 1] ~ "***" ~ text[start + at .. end];
+    }
+    if (query < 0)
+        return result ~ text[end .. $];
+    result ~= text[end .. start + query + 1]; // the path and the '?'
+    foreach (i, pair; text[start + query + 1 .. $].split("&"))
+    {
+        if (i)
+            result ~= '&';
+        const eq = pair.indexOf('=');
+        result ~= eq >= 0 && isPasswordKey(pair[0 .. eq]) ? pair[0 .. eq + 1] ~ "***" : pair;
+    }
+    return result;
+}
+
+// Whether a query parameter holds a password: its name, percent-decoded as `Dsn.parse` decodes it, contains
+// "password" or is "pwd" or "passwd" (any case)
+private bool isPasswordKey(string key) @safe pure
+{
+    import std.algorithm.searching : canFind;
+    import std.ascii : isHexDigit, toLower;
+
+    static uint hex(char c) @safe pure nothrow @nogc
+    {
+        return c <= '9' ? c - '0' : (c | 0x20) - 'a' + 10;
+    }
+
+    char[] name;
+    for (size_t i; i < key.length; i++)
+    {
+        char c = key[i];
+        if (c == '%' && i + 2 < key.length && isHexDigit(key[i + 1]) && isHexDigit(key[i + 2]))
+        {
+            c = cast(char)(hex(key[i + 1]) << 4 | hex(key[i + 2]));
+            i += 2;
+        }
+        name ~= toLower(c);
+    }
+    return name.canFind("password") || name == "pwd" || name == "passwd";
 }
 
 ///
@@ -146,6 +188,15 @@ string redactPassword(string text) @safe pure
     assert(redactPassword("pg://app:p@ss@db") == "pg://app:***@db"); // the last '@' ends the user info
     assert(redactPassword("pg://app@db/x?a=b@c") == "pg://app@db/x?a=b@c"); // no password
     assert(redactPassword("pg://db:5432") == "pg://db:5432");
+    // passwords in query parameters
+    assert(redactPassword("oracle://u@h:99999/s?password=s3cret") == "oracle://u@h:99999/s?password=***");
+    assert(redactPassword("oracle://u:p@h/s?wallet_password=w&x=1&SSLPassword=k&pwd=z")
+            == "oracle://u:***@h/s?wallet_password=***&x=1&SSLPassword=***&pwd=***");
+    assert(redactPassword("pg://h?&a=1&&password") == "pg://h?&a=1&&password"); // empty pairs, no value
+    assert(redactPassword("pg://h/db?") == "pg://h/db?");
+    // names as Dsn.parse decodes them
+    assert(redactPassword("pg://h?pass%77ord=a&%50WD=b&ssl%70assword=c&passwd=d&pa%7=e")
+            == "pg://h?pass%77ord=***&%50WD=***&ssl%70assword=***&passwd=***&pa%7=e");
 }
 
 /++
@@ -194,7 +245,9 @@ Duration parseSeconds(string key, string value) @safe
         throw new ClientException("Invalid value '" ~ value ~ "' for '" ~ key ~ "' (seconds expected)");
     if (!(secondsValue >= 0) || secondsValue > 1e9)
         throw new ClientException("Invalid value '" ~ value ~ "' for '" ~ key ~ "' (seconds expected)");
-    return dur!"hnsecs"(cast(long)(secondsValue * 10_000_000));
+    const hnsecs = cast(long)(secondsValue * 10_000_000);
+    // a positive value never becomes zero, which means "no limit" for timeouts
+    return dur!"hnsecs"(hnsecs == 0 && secondsValue > 0 ? 1 : hnsecs);
 }
 
 /++
@@ -282,18 +335,24 @@ private string decode(string encoded, string context) @safe
         assertThrown!ClientException(Dsn.parse(bad, "db"), bad);
 
     // Error messages quote the string without its password
-    foreach (bad; ["db://u:topsecret@h:99999", "db://u:topsecret@h/?x=%zz", "db://u:topsecret%zz@h"])
+    foreach (bad; [
+        "db://u:topsecret@h:99999", "db://u:topsecret@h/?x=%zz", "db://u:topsecret%zz@h",
+        "db://u@h:99999?password=topsecret"
+    ])
     {
         import std.algorithm.searching : canFind;
         import std.exception : collectException;
 
         auto e = collectException!ClientException(Dsn.parse(bad, "db"));
-        assert(e !is null && !e.msg.canFind("topsecret") && e.msg.canFind("u:***@h"), e.msg);
+        assert(e !is null && !e.msg.canFind("topsecret") && e.msg.canFind("***"), e.msg);
     }
 
     // Value parsers
     assertThrown!ClientException(parseSeconds("t", "-1"));
     assertThrown!ClientException(parseSeconds("t", "nan"));
+    import core.time : Duration, hnsecs;
+
+    assert(parseSeconds("t", "0.00000001") == hnsecs(1) && parseSeconds("t", "0") == Duration.zero);
     assertThrown!ClientException(parseSeconds("t", "1e10"));
     assertThrown!ClientException(parseFlag("f", "yes"));
     assert(!parseFlag("f", "0") && parseFlag("f", "1"));

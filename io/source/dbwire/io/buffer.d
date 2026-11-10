@@ -186,7 +186,9 @@ final class BufferedReader
     }
 
     /++
-    Reads `length` bytes into a new array.
+    Reads `length` bytes into a new array. Lengths above 1 MiB are read in
+    growing pieces, so a length that the peer announces but doesn't send
+    can't make the reader allocate it all at once.
 
     Throws: `ProtocolException` if `length` exceeds `maxStringLength`;
     `ConnectionException` if the stream ends first.
@@ -196,9 +198,33 @@ final class BufferedReader
         import std.array : uninitializedArray;
 
         checkLength(length);
+        if (length > largeRead)
+            return readLargeBytes(length);
         auto data = uninitializedArray!(ubyte[])(length); // filled right away
         readExact(data);
         return (() @trusted => cast(immutable(ubyte)[]) data)(); // data is unique: just allocated
+    }
+
+    private enum size_t largeRead = 1 << 20;
+
+    // Lengths above `largeRead`: the array doubles as the data arrives
+    private immutable(ubyte)[] readLargeBytes(size_t length) @safe
+    {
+        import core.memory : GC;
+        import std.array : uninitializedArray;
+
+        auto data = uninitializedArray!(ubyte[])(largeRead); // filled right away, as each grown array
+        readExact(data);
+        while (data.length < length)
+        {
+            const filled = data.length;
+            auto grown = uninitializedArray!(ubyte[])(length - filled < filled ? length : 2 * filled);
+            grown[0 .. filled] = data[];
+            (() @trusted => GC.free(data.ptr))(); // allocated here and not referenced anywhere else
+            data = grown;
+            readExact(data[filled .. $]);
+        }
+        return (() @trusted => cast(immutable(ubyte)[]) data)(); // data is unique: allocated here
     }
 
     /++
@@ -214,7 +240,8 @@ final class BufferedReader
 
     /++
     Reads `length` bytes as a string stored in `arena`: short strings share its
-    buffers, so many values need few allocations. The content is not validated
+    buffers, so many values need few allocations. Lengths above 1 MiB are read
+    in growing pieces, as `readExactBytes` does. The content is not validated
     as UTF-8.
 
     Throws: `ProtocolException` if `length` exceeds `maxStringLength`;
@@ -223,6 +250,8 @@ final class BufferedReader
     string readExactString()(size_t length, ref StringArena arena) @safe
     {
         checkLength(length);
+        if (length > largeRead)
+            return cast(string) readLargeBytes(length);
         auto bytes = arena.take(length);
         readExact(bytes);
         return (() @trusted => cast(string) bytes)(); // the arena never hands out or writes these bytes again
@@ -647,4 +676,40 @@ ubyte[T.sizeof] toBigEndian(T)(T value) @safe pure nothrow @nogc if (isFixedWire
     auto lr = new BufferedReader(limited);
     lr.maxStringLength = 4;
     assertThrown!ProtocolException(lr.readExactString(8, arena));
+}
+
+// Large lengths are read in growing pieces: the right bytes, and a length the peer doesn't send costs little memory
+@safe unittest
+{
+    import core.memory : GC;
+    import std.exception : assertThrown;
+    import dbwire.io.mock : MockTransport;
+
+    auto data = new ubyte[(3 << 20) + 5];
+    foreach (i, ref b; data)
+        b = cast(ubyte)(i * 7);
+    auto transport = new MockTransport;
+    transport.feed(data);
+    auto reader = new BufferedReader(transport);
+    assert(reader.readExactBytes(data.length) == data);
+    transport.feed(data);
+    StringArena arena;
+    assert(reader.readExactString(data.length, arena) == cast(const(char)[]) data);
+
+    transport = new MockTransport;
+    transport.feed(new ubyte[10]);
+    reader = new BufferedReader(transport);
+    static ulong allocated() @trusted
+    {
+        return GC.allocatedInCurrentThread; // not annotated @safe; only reads a counter
+    }
+
+    const before = allocated();
+    assertThrown!ConnectionException(reader.readExactBytes(1000 << 20)); // announces 1000 MiB, sends 10 bytes
+    assert(allocated() - before < 4 << 20);
+
+    transport.feed(new ubyte[10]);
+    const before2 = allocated();
+    assertThrown!ConnectionException(reader.readExactString(1000 << 20, arena)); // the same through the arena
+    assert(allocated() - before2 < 4 << 20);
 }
