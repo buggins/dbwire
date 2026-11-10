@@ -6,6 +6,10 @@ All notable changes to dbwire are documented here. The format follows
 
 ## Unreleased
 
+## 0.9.4 — 2026-11-10
+
+Makes `TextBuffer.number` as fast as the connectors' own date text code.
+
 ### Changed
 
 - `dbwire:types` (#71): `TextBuffer.number` writes the digits in place, as
