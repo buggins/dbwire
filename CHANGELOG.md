@@ -6,6 +6,14 @@ All notable changes to dbwire are documented here. The format follows
 
 ## Unreleased
 
+### Changed
+
+- `dbwire:types` (#75): `TextBuffer.put` copies text in a loop (a slice
+  assignment called the runtime's overlap-checking copy for every piece),
+  and `formatDigits` doesn't fill its buffer first. The layout of a double
+  takes 41 ns instead of 48 (the connectors' own code: 36); mssql-native's
+  float `getString` is as fast as before the move to dbwire.
+
 ## 0.9.4 — 2026-11-10
 
 Makes `TextBuffer.number` as fast as the connectors' own date text code.
