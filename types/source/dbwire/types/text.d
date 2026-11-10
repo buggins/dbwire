@@ -29,7 +29,10 @@ struct TextBuffer(size_t capacity)
     /// Appends text.
     void put(scope const(char)[] s) @safe pure nothrow @nogc
     {
-        buffer[length .. length + s.length] = s[];
+        // a loop: a slice assignment calls the runtime's overlap-checking copy, slow for short pieces
+        auto to = buffer[length .. length + s.length];
+        foreach (i, c; s)
+            to[i] = c;
         length += s.length;
     }
 

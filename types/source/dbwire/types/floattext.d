@@ -188,7 +188,9 @@ string formatDigits(const ShortestDigits d, bool negative, FloatLayout layout = 
 {
     import dbwire.types.text : TextBuffer;
 
-    TextBuffer!400 t; // every double fits in any layout: at most "-0." ~ 323 zeros ~ 17 digits, or 309 digits
+    // every double fits in any layout: at most "-0." ~ 323 zeros ~ 17 digits, or 309 digits
+    TextBuffer!400 t = void; // not filled with the initial value first (most texts use a few characters)
+    t.length = 0;
     putDigits(t, d.digits, d.pointPos, negative, layout);
     return t.text;
 }
