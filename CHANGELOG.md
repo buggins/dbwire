@@ -6,6 +6,46 @@ All notable changes to dbwire are documented here. The format follows
 
 ## Unreleased
 
+### Added
+
+- `dbwire:charset` (#66): `encodeUtf16leInto`/`encodeUtf16beInto` encode
+  UTF-8 into a caller's buffer, piece by piece (the same bytes as
+  `encodeUtf16le`/`be`, which now use them), so a connector can write text
+  straight into its packets; `utf16Length` gives the total beforehand, and
+  `isAscii` tells whether text is all ASCII.
+- `dbwire:types` (#67): `TextBuffer(capacity)`, short text built on the stack
+  and copied once (the connectors each had one); `formatDigits`/`putDigits`
+  lay out `shortestDigits` as text, with a `FloatLayout` for the variants the
+  connectors use (C's `%g`, PostgreSQL's fixed limits, ClickHouse's).
+
+### Changed
+
+- `dbwire:types` (#65): `shortestDigits` never allocates (it is `@nogc`):
+  doubles outside about 1e-20…1e35 use fixed 1280-bit integers instead of
+  `BigInt` (checked against `BigInt` for every binary exponent), and 10^-k is
+  computed once: 4 to 5 times faster there (log-uniform doubles 8.0 →
+  1.6 µs, values near 1e-300 11.0 → 2.5 µs), without the 12 to 24 KB per
+  value.
+- `dbwire:charset` (#66): decoding UTF-16 is 1.7 times faster for ASCII
+  text (one pass up to the first other character); other text is decoded as
+  before.
+
+### Fixed
+
+- `dbwire:client` (#65): `redactPassword` also masks the values of query
+  parameters whose name contains `password` or is `pwd` or `passwd`, also
+  percent-encoded (`?password=`, `wallet_password=`, `sslpassword=`,
+  `pass%77ord=`), so `Dsn.parse` errors don't show them.
+- `dbwire:client` (#65): `parseSeconds` no longer turns a tiny positive value
+  (`0.00000001`) into zero, which means "no limit" for timeouts; it gives at
+  least 100 ns.
+- `dbwire:io` (#65): `BufferedReader.readExactBytes` and
+  `readExactString` (with or without a `StringArena`) read lengths above
+  1 MiB in growing pieces, so a peer that announces a large length without
+  sending the data can't make them allocate the whole length.
+- `dbwire:types` (#65): the unit tests build with `-preview=dip1000` on
+  older compilers too (LDC 1.36's `BigInt` isn't `scope`-annotated).
+
 ## 0.9.2 — 2026-11-09
 
 Adds `Ties.avoid` to `shortestDigits` for PostgreSQL's float text.

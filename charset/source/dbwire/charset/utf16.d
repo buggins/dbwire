@@ -23,6 +23,70 @@ ubyte[] encodeUtf16be(scope const(char)[] text) @safe pure nothrow
     return encodeUtf16!true(text);
 }
 
+/++
+Encodes as much of `text[pos .. $]` (UTF-8) as fits into `buffer` as UTF-16LE
+(whole characters: one needs 2 bytes, or 4 for a surrogate pair), advances
+`pos` past them and returns the number of bytes written. Calling it again
+with the next buffer until `pos == text.length` gives exactly what
+`encodeUtf16le` returns, without allocating; `utf16Length` tells the total
+beforehand. A buffer of at least 4 bytes always makes progress.
++/
+size_t encodeUtf16leInto(scope const(char)[] text, ref size_t pos, scope ubyte[] buffer) @safe pure nothrow @nogc
+{
+    return encodeInto!false(text, pos, buffer);
+}
+
+/// ditto, as UTF-16BE (`encodeUtf16be`).
+size_t encodeUtf16beInto(scope const(char)[] text, ref size_t pos, scope ubyte[] buffer) @safe pure nothrow @nogc
+{
+    return encodeInto!true(text, pos, buffer);
+}
+
+/// The length in bytes of `text` (UTF-8) in UTF-16, as `encodeUtf16le` and `encodeUtf16be` encode it.
+size_t utf16Length(scope const(char)[] text) @safe pure nothrow @nogc
+{
+    size_t length;
+    for (size_t i = 0; i < text.length;)
+    {
+        if (text[i] < 0x80)
+        {
+            i++;
+            length += 2;
+            continue;
+        }
+        length += decodeUtf8Char(text, i) < 0x10000 ? 2 : 4; // invalid UTF-8: U+FFFD, 2 bytes
+    }
+    return length;
+}
+
+/// Whether `text` is all ASCII: its UTF-16 form then has one unit per `char`.
+bool isAscii(scope const(char)[] text) @safe pure nothrow @nogc
+{
+    foreach (c; text)
+        if (c >= 0x80)
+            return false;
+    return true;
+}
+
+///
+@safe pure nothrow @nogc unittest
+{
+    // Into a small buffer, piece by piece: the same bytes as encodeUtf16le, one character never split
+    static immutable text = "Grüße 😀!";
+    ubyte[5] buffer;
+    ubyte[32] all;
+    size_t pos, length;
+    while (pos < text.length)
+    {
+        const n = encodeUtf16leInto(text, pos, buffer[]);
+        all[length .. length + n] = buffer[0 .. n];
+        length += n;
+    }
+    assert(length == utf16Length(text) && length == 18);
+    assert(all[0 .. 4] == [0x47, 0, 0x72, 0] && all[12 .. 16] == [0x3D, 0xD8, 0x00, 0xDE]); // G r, then 😀
+    assert(isAscii("SELECT 1") && !isAscii(text));
+}
+
 /// Decodes UTF-16LE bytes as UTF-8; an odd trailing byte is ignored.
 string decodeUtf16le(scope const(ubyte)[] bytes) @safe pure nothrow
 {
@@ -54,29 +118,43 @@ private ubyte[] encodeUtf16(bool bigEndian)(scope const(char)[] text) @safe pure
     // 4-byte sequence two units
     auto result = uninitializedArray!(ubyte[])(text.length * 2);
     size_t pos;
+    const length = encodeInto!bigEndian(text, pos, result);
+    return result[0 .. length];
+}
+
+private size_t encodeInto(bool bigEndian)(scope const(char)[] text, ref size_t pos, scope ubyte[] buffer)
+{
+    size_t n;
     void put(uint unit) @safe pure nothrow @nogc
     {
         static if (bigEndian)
         {
-            result[pos] = cast(ubyte)(unit >> 8);
-            result[pos + 1] = cast(ubyte) unit;
+            buffer[n] = cast(ubyte)(unit >> 8);
+            buffer[n + 1] = cast(ubyte) unit;
         }
         else
         {
-            result[pos] = cast(ubyte) unit;
-            result[pos + 1] = cast(ubyte)(unit >> 8);
+            buffer[n] = cast(ubyte) unit;
+            buffer[n + 1] = cast(ubyte)(unit >> 8);
         }
-        pos += 2;
+        n += 2;
     }
 
-    for (size_t i = 0; i < text.length;)
+    size_t i = pos;
+    while (i < text.length)
     {
         if (text[i] < 0x80)
         {
+            if (n + 2 > buffer.length)
+                break;
             put(text[i++]);
             continue;
         }
-        const c = decodeUtf8Char(text, i); // invalid UTF-8 becomes U+FFFD
+        size_t next = i;
+        const c = decodeUtf8Char(text, next); // invalid UTF-8 becomes U+FFFD
+        if (n + (c < 0x10000 ? 2 : 4) > buffer.length)
+            break;
+        i = next;
         if (c < 0x10000)
             put(c);
         else
@@ -85,7 +163,8 @@ private ubyte[] encodeUtf16(bool bigEndian)(scope const(char)[] text) @safe pure
             put(0xDC00 + ((c - 0x10000) & 0x3FF));
         }
     }
-    return result[0 .. pos];
+    pos = i;
+    return n;
 }
 
 private string decodeUtf16(bool bigEndian)(scope const(ubyte)[] bytes) @safe pure nothrow
@@ -101,11 +180,9 @@ private string decodeUtf16(bool bigEndian)(scope const(ubyte)[] bytes) @safe pur
     }
 
     const units = bytes.length / 2;
-    // Two passes: the exact UTF-8 length, then the characters
-    size_t scan(bool write)(scope char[] result) @safe pure nothrow @nogc
+    // The units from `i` on, as UTF-8 at `result[pos]`: their exact UTF-8 length (`write` false), then the characters
+    size_t scan(bool write)(scope char[] result, size_t i, size_t pos) @safe pure nothrow @nogc
     {
-        size_t pos;
-        size_t i;
         while (i < units)
         {
             dchar c = unit(bytes, i++);
@@ -135,8 +212,29 @@ private string decodeUtf16(bool bigEndian)(scope const(ubyte)[] bytes) @safe pur
         return pos;
     }
 
-    auto result = uninitializedArray!(char[])(scan!false(null));
-    scan!true(result);
+    // Two passes into an array of the exact size, from `i` on (after `i` ASCII characters already in `prefix`)
+    char[] exact(scope const(char)[] prefix, size_t i) @safe pure nothrow
+    {
+        auto full = uninitializedArray!(char[])(scan!false(null, i, i));
+        full[0 .. i] = prefix[0 .. i];
+        scan!true(full, i, i);
+        return full;
+    }
+
+    // ASCII (most text) in one pass, one char per unit; text with other characters goes to `exact`
+    if (!units || unit(bytes, 0) >= 0x80)
+        return (() @trusted => cast(string) exact(null, 0))(); // unique: built here
+    auto result = uninitializedArray!(char[])(units);
+    foreach (i; 0 .. units)
+    {
+        const c = unit(bytes, i);
+        if (c >= 0x80)
+        {
+            result = exact(result, i);
+            break;
+        }
+        result[i] = cast(char) c;
+    }
     return (() @trusted => cast(string) result)(); // result is unique: built here
 }
 
@@ -279,4 +377,42 @@ package int decodeUtf8(scope const(char)[] text, ref size_t i) @safe pure nothro
         assert(encodeUtf16le(text) == le && encodeUtf16be(text) == be);
         assert(decodeUtf16le(le) == text && decodeUtf16be(be) == text);
     }
+}
+
+// Piecewise encoding gives the one-shot bytes for any input (invalid UTF-8 too) and buffer size from 4 bytes;
+// utf16Length agrees; decoding an ASCII prefix then other units gives the same text as without the prefix
+@safe unittest
+{
+    import std.random : Mt19937, uniform;
+
+    auto rng = Mt19937(11);
+    foreach (_; 0 .. 2000)
+    {
+        static immutable string[] pieces = [
+            "a", "Z", " ", "é", "мир", "😀", "\xFF", "\xE2\x82", "\xED\xA0\x80", "\xF0"
+        ];
+        string text;
+        foreach (i; 0 .. uniform(0, 30, rng))
+            text ~= pieces[uniform(0, pieces.length, rng)];
+        const oneShotLe = encodeUtf16le(text), oneShotBe = encodeUtf16be(text);
+        bool ascii = true;
+        foreach (c; text)
+            ascii = ascii && c < 0x80;
+        assert(utf16Length(text) == oneShotLe.length && isAscii(text) == ascii);
+        auto buffer = new ubyte[uniform(4, 12, rng)];
+        ubyte[] le, be;
+        for (size_t pos; pos < text.length;)
+            le ~= buffer[0 .. encodeUtf16leInto(text, pos, buffer)];
+        for (size_t pos; pos < text.length;)
+            be ~= buffer[0 .. encodeUtf16beInto(text, pos, buffer)];
+        assert(le == oneShotLe && be == oneShotBe);
+        // the fast ASCII path and the general path agree
+        const prefix = "plain ascii prefix ";
+        assert(decodeUtf16le(encodeUtf16le(prefix ~ text)) == prefix ~ decodeUtf16le(oneShotLe));
+        assert(decodeUtf16be(encodeUtf16be(prefix ~ text)) == prefix ~ decodeUtf16be(oneShotBe));
+    }
+    size_t pos;
+    ubyte[3] tooSmall;
+    assert(encodeUtf16leInto("😀", pos, tooSmall[]) == 0 && pos == 0); // a pair needs 4 bytes
+    assert(encodeUtf16leInto("ab", pos, tooSmall[]) == 2 && pos == 1);
 }

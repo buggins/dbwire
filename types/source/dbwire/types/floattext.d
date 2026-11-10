@@ -88,9 +88,9 @@ The sign is ignored, zero gives the digit `0` with `pointPos` 1, and NaN and
 infinities give no digits: callers write the sign, zero, NaN and infinities
 themselves, since servers write them differently.
 
-The result is exact for every value. Moderate magnitudes (nearly every
-`float`, doubles from about 1e-20 to 1e35) run on 128-bit integers and don't
-allocate; the others need `BigInt`, so the function isn't `@nogc`.
+The result is exact for every value, and nothing is allocated (`@nogc`):
+moderate magnitudes (nearly every `float`, doubles from about 1e-20 to 1e35)
+run on 128-bit integers, the others on fixed 1280-bit ones.
 +/
 ShortestDigits shortestDigits(T)(const T value, Ties ties = Ties.toEven)
         if (is(T == float) || is(T == double))
@@ -108,7 +108,7 @@ ShortestDigits shortestDigits(T)(const T value, Ties ties = Ties.toEven)
         return result;
     }
     const input = digitInput(value < 0 ? -value : value, ties);
-    const generated = generateDigits!U128(input, result) || generateDigits!BigInt(input, result);
+    const generated = generateDigits!U128(input, result) || generateDigits!Wide(input, result); // Wide always fits
     assert(generated, "the digit generation failed");
     return result;
 }
@@ -131,10 +131,8 @@ ShortestDigits shortestDigits(T)(const T value, Ties ties = Ties.toEven)
     assert(g.digits == "10000000149011612" && g.pointPos == 0);
 }
 
-@safe pure nothrow unittest
+@safe pure nothrow @nogc unittest
 {
-    import std.math : isNaN;
-
     // Locks in the inferred attributes
     assert(shortestDigits(1.5).pointPos == 1);
     const big = shortestDigits(1e300);
@@ -156,6 +154,106 @@ ShortestDigits shortestDigits(T)(const T value, Ties ties = Ties.toEven)
 
     // No slice of a temporary
     static assert(!__traits(compiles, shortestDigits(1.5).digits));
+}
+
+/++
+How `formatDigits` lays out digits, in terms of the decimal exponent X
+(the value is d.ddd × 10^X): plain notation (`0.0001`, `123.45`, `1500`)
+when X is at least `minPlainExponent`, below `plainExponentLimit`, and, with
+`limitByDigits`, below the number of digits; otherwise one digit, the others
+after a point, and the exponent (`1.5e+300`). The defaults are C's `%g` with
+as many significant digits as there are (`1e+02` for 100).
++/
+struct FloatLayout
+{
+    /// The lowest exponent written in plain notation.
+    int minPlainExponent = -4;
+    /// Exponents from this one up use the exponent form.
+    int plainExponentLimit = int.max;
+    /// Whether exponents from the number of digits up use the exponent form too (`%g`).
+    bool limitByDigits = true;
+    /// Whether positive exponents get a `+` (`e+21` or `e21`).
+    bool exponentPlus = true;
+    /// The fewest exponent digits, padded with zeros (`e+05` with 2).
+    ubyte exponentDigits = 2;
+}
+
+/++
+`d` (from `shortestDigits`: the value is `0.digits × 10^pointPos`) as text,
+`-` first when `negative`, laid out as `layout` says. NaN and infinities
+have no digits, and give empty text: callers write them (and usually zero,
+`0` here), since servers spell them differently.
++/
+string formatDigits(const ShortestDigits d, bool negative, FloatLayout layout = FloatLayout.init) @safe pure nothrow
+{
+    import dbwire.types.text : TextBuffer;
+
+    TextBuffer!400 t; // every double fits in any layout: at most "-0." ~ 323 zeros ~ 17 digits, or 309 digits
+    putDigits(t, d.digits, d.pointPos, negative, layout);
+    return t.text;
+}
+
+/// ditto, appended to `t`.
+void putDigits(Buffer)(ref Buffer t, scope const(char)[] digits, int pointPos, bool negative,
+        FloatLayout layout = FloatLayout.init)
+{
+    if (!digits.length)
+        return; // NaN or an infinity
+    const count = cast(int) digits.length;
+    const exponent = pointPos - 1;
+    if (negative)
+        t.put('-');
+    if (exponent < layout.minPlainExponent || exponent >= layout.plainExponentLimit
+            || (layout.limitByDigits && exponent >= count))
+    {
+        t.put(digits[0]);
+        if (count > 1)
+        {
+            t.put('.');
+            t.put(digits[1 .. $]);
+        }
+        t.put('e');
+        if (exponent < 0)
+            t.put('-');
+        else if (layout.exponentPlus)
+            t.put('+');
+        t.number(exponent < 0 ? -exponent : exponent, layout.exponentDigits);
+    }
+    else if (pointPos <= 0)
+    {
+        t.put("0.");
+        t.fill('0', -pointPos);
+        t.put(digits);
+    }
+    else if (pointPos >= count)
+    {
+        t.put(digits);
+        t.fill('0', pointPos - count);
+    }
+    else
+    {
+        t.put(digits[0 .. pointPos]);
+        t.put('.');
+        t.put(digits[pointPos .. $]);
+    }
+}
+
+///
+@safe pure nothrow unittest
+{
+    const d = shortestDigits(1.5e300), h = shortestDigits(100.0), s = shortestDigits(0.00012);
+    assert(formatDigits(d, true) == "-1.5e+300" && formatDigits(h, false) == "1e+02");
+    assert(formatDigits(s, false) == "0.00012");
+    // PostgreSQL's float8: a fixed limit instead of the number of digits
+    const pg = FloatLayout(-4, 15, false);
+    assert(formatDigits(h, false, pg) == "100" && formatDigits(shortestDigits(1e15), false, pg) == "1e+15");
+    // ClickHouse: plain from 1e-6 to below 1e21, no '+', no padding
+    const ch = FloatLayout(-6, 21, false, false, 1);
+    assert(formatDigits(shortestDigits(1e-7), false, ch) == "1e-7" && formatDigits(shortestDigits(1e20), false, ch)
+            == "100000000000000000000" && formatDigits(shortestDigits(1.5e21), false, ch) == "1.5e21");
+    // zero is "0"; NaN and infinities give nothing
+    assert(formatDigits(shortestDigits(0.0), false) == "0");
+    assert(formatDigits(shortestDigits(-double.infinity), true) == "");
 }
 
 /// The value `f × 2^e` to generate digits for, and its properties; see `shortestDigits`.
@@ -207,8 +305,9 @@ private DigitInput digitInput(T)(const T value, Ties ties)
 }
 
 /++
-Generates the digits of `input` with integers of type `N` (`U128` or
-`BigInt`). Returns: false if `U128` overflowed (`result` is undefined then).
+Generates the digits of `input` with integers of type `N` (`U128`, `Wide`,
+or `BigInt`, the reference in the tests). Returns: false if `U128` overflowed
+(`result` is undefined then; `Wide` holds every double).
 
 This is the free-format digit generation of Steele and White, with exact
 integer arithmetic: `r / s` is the value, `mPlus / s` and `mMinus / s` are
@@ -219,35 +318,56 @@ doubles from about 1e-20 to 1e35; both types give the same digits.
 +/
 private bool generateDigits(N)(const DigitInput input, out ShortestDigits result)
 {
-    N r = N(input.f), s = N(1), mPlus = N(1), mMinus = N(1);
+    enum checked = !is(N == BigInt); // U128 and Wide flag results that don't fit
+    N r, s, mPlus, mMinus;
     bool failed()
     {
-        static if (is(N == U128))
+        static if (checked)
             return r.bad || s.bad || mPlus.bad || mMinus.bad;
         else
             return false;
     }
 
+    // Scale by 2 (by 4 at a power of two) so that the half gaps are whole numbers
+    const scale = input.narrowBelow ? 2 : 1;
+    int k = input.k;
     if (input.e >= 0)
     {
-        r <<= input.e;
-        mPlus <<= input.e;
+        r = N(input.f);
+        r <<= input.e + scale;
+        s = N(1);
+        s <<= scale;
+        mPlus = N(1);
+        mPlus <<= input.e + (input.narrowBelow ? 1 : 0);
+        mMinus = N(1);
         mMinus <<= input.e;
     }
     else
-        s <<= -input.e;
-    // Scale by 2 (by 4 at a power of two) so that the half gaps are whole numbers
-    r <<= input.narrowBelow ? 2 : 1;
-    s <<= input.narrowBelow ? 2 : 1;
-    if (input.narrowBelow)
-        mPlus <<= 1;
+    {
+        s = N(1);
+        s <<= scale - input.e;
+        // r, mPlus and mMinus are small here: below 1 (k < 0) they all get the factor 10^-k, computed once
+        const ulong rSmall = input.f << scale, mPlusSmall = input.narrowBelow ? 2 : 1;
+        if (k < 0)
+        {
+            N p = N(1);
+            multiplyByPow10(p, -k);
+            r = p * rSmall;
+            mPlus = p * mPlusSmall;
+            mMinus = p;
+        }
+        else
+        {
+            r = N(rSmall);
+            mPlus = N(mPlusSmall);
+            mMinus = N(1);
+        }
+    }
     if (failed())
-        return false; // most doubles beyond about 1e35 or below 1e-20 stop here
-
-    int k = input.k;
+        return false; // with U128, most doubles beyond about 1e35 or below 1e-20 stop here
     if (k >= 0)
         multiplyByPow10(s, k);
-    else
+    else if (input.e >= 0) // not reached: values from 1 up have k >= 0
     {
         multiplyByPow10(r, -k);
         multiplyByPow10(mPlus, -k);
@@ -271,7 +391,7 @@ private bool generateDigits(N)(const DigitInput input, out ShortestDigits result
     for (;;)
     {
         const top = (r + mPlus) * 10;
-        static if (is(N == U128))
+        static if (checked)
             if (top.bad)
                 return false;
         if (reaches(top, s))
@@ -297,7 +417,7 @@ private bool generateDigits(N)(const DigitInput input, out ShortestDigits result
         const top = r + mPlus;
         if (failed() || d > 9)
             return false;
-        static if (is(N == U128))
+        static if (checked)
             if (top.bad)
                 return false;
         const low = reaches(mMinus, r);
@@ -313,7 +433,7 @@ private bool generateDigits(N)(const DigitInput input, out ShortestDigits result
         {
             // Both last digits read back: take the closer one, the even one on a tie
             const twice = r + r;
-            static if (is(N == U128))
+            static if (checked)
                 if (twice.bad)
                     return false;
             if (twice > s || (twice == s && (d & 1) != 0))
@@ -342,7 +462,7 @@ private void multiplyByPow10(N)(ref N x, int n)
 }
 
 /// The digit `r / s` (below 10 when the digit generation is right), leaving the remainder in `r`.
-private int takeDigit(N)(ref N r, N s)
+private int takeDigit(N)(ref N r, const ref N s)
 {
     static if (is(N == BigInt))
     {
@@ -352,6 +472,29 @@ private int takeDigit(N)(ref N r, N s)
         divMod(r, s, q, remainder);
         r = remainder;
         return cast(int) q.toLong();
+    }
+    else static if (is(N == Wide))
+    {
+        if (r < s)
+            return 0;
+        // an estimate from the top three words of both (exact or one off), then the correction; a quotient
+        // beyond 10 (or s too small to show in the top words) gives 10, which the caller rejects
+        const base = r.used > 3 ? r.used - 3 : 0;
+        const estimate = r.approximate(base) / s.approximate(base);
+        int q = estimate < 10 ? cast(int) estimate : 10;
+        auto t = s * q;
+        while (q > 0 && t > r)
+        {
+            t -= s;
+            q--;
+        }
+        r -= t;
+        while (r >= s && q < 10)
+        {
+            r -= s;
+            q++;
+        }
+        return q;
     }
     else
     {
@@ -368,7 +511,7 @@ private int takeDigit(N)(ref N r, N s)
 /++
 An unsigned 128-bit integer with the operations of the digit generation.
 An operation whose result does not fit sets `bad`, which every later result
-inherits; the caller then starts again with `BigInt`.
+inherits; the caller then starts again with `Wide`.
 +/
 private struct U128
 {
@@ -461,6 +604,159 @@ private struct U128
         const ll = aLow * bLow, lh = aLow * bHigh, hl = aHigh * bLow, hh = aHigh * bHigh;
         const middle = (ll >> 32) + (lh & 0xFFFF_FFFF) + (hl & 0xFFFF_FFFF);
         return Product(hh + (lh >> 32) + (hl >> 32) + (middle >> 32), (middle << 32) | (ll & 0xFFFF_FFFF));
+    }
+}
+
+/++
+An unsigned integer of up to 1280 bits with the operations of the digit
+generation; `used` words are significant, the rest are zero. Every double
+fits with room to spare (the largest numbers, near 2^1140, come from the
+smallest subnormals), so `bad` (a result that didn't fit) is only a safety net.
++/
+private struct Wide
+{
+    enum words = 20;
+    ulong[words] w; /// little-endian words
+    uint used; /// words in use
+    bool bad; /// a result did not fit: the value is meaningless
+
+    this(ulong value) @safe pure nothrow @nogc
+    {
+        w[0] = value;
+        used = value != 0;
+    }
+
+    Wide opBinary(string op : "+")(const ref Wide b) const @safe pure nothrow @nogc
+    {
+        Wide sum;
+        const n = used > b.used ? used : b.used;
+        ulong carry;
+        foreach (i; 0 .. n)
+        {
+            const x = w[i] + b.w[i];
+            const y = x + carry;
+            carry = (x < w[i]) | (y < x);
+            sum.w[i] = y;
+        }
+        sum.used = n;
+        sum.bad = bad || b.bad;
+        if (carry)
+            sum.append(1);
+        return sum;
+    }
+
+    /// `this - b`, for `this >= b`.
+    Wide opBinary(string op : "-")(const ref Wide b) const @safe pure nothrow @nogc
+    {
+        Wide difference = this;
+        difference -= b;
+        return difference;
+    }
+
+    /// ditto
+    void opOpAssign(string op : "-")(const ref Wide b) @safe pure nothrow @nogc
+    {
+        ulong borrow;
+        foreach (i; 0 .. used)
+        {
+            const x = w[i] - b.w[i];
+            const y = x - borrow;
+            borrow = (w[i] < b.w[i]) | (x < borrow);
+            w[i] = y;
+        }
+        bad = bad || b.bad;
+        trim();
+    }
+
+    Wide opBinary(string op : "*")(ulong m) const @safe pure nothrow @nogc
+    {
+        Wide product = this;
+        product *= m;
+        return product;
+    }
+
+    void opOpAssign(string op : "*")(ulong m) @safe pure nothrow @nogc
+    {
+        ulong carry;
+        foreach (i; 0 .. used)
+        {
+            const p = U128.multiply(w[i], m);
+            const low = p.low + carry;
+            carry = p.high + (low < p.low);
+            w[i] = low;
+        }
+        if (carry)
+            append(carry);
+        trim();
+    }
+
+    /// The value divided by 2^(64 × base), as a double (from the words at `base` and above).
+    double approximate(size_t base) const @safe pure nothrow @nogc
+    {
+        double x = 0;
+        foreach_reverse (i; base .. used)
+            x = x * 18_446_744_073_709_551_616.0 + w[i];
+        return x;
+    }
+
+    void opOpAssign(string op : "<<")(int n) @safe pure nothrow @nogc
+    {
+        if (n == 0 || used == 0)
+            return;
+        const wordShift = n / 64, bitShift = n % 64;
+        // the words the result needs: one more when the top word's high bits move into a new word
+        const needed = used + wordShift + (bitShift && (w[used - 1] >> (64 - bitShift)) != 0 ? 1 : 0);
+        if (needed > words)
+        {
+            bad = true;
+            return;
+        }
+        ulong[words] shifted;
+        foreach (i; 0 .. used)
+        {
+            shifted[i + wordShift] |= w[i] << bitShift;
+            if (bitShift && i + wordShift + 1 < needed)
+                shifted[i + wordShift + 1] = w[i] >> (64 - bitShift);
+        }
+        w = shifted;
+        used = cast(uint) needed;
+    }
+
+    int opCmp(const ref Wide b) const @safe pure nothrow @nogc
+    {
+        if (used != b.used)
+            return used < b.used ? -1 : 1;
+        foreach_reverse (i; 0 .. used)
+            if (w[i] != b.w[i])
+                return w[i] < b.w[i] ? -1 : 1;
+        return 0;
+    }
+
+    bool opEquals(const ref Wide b) const @safe pure nothrow @nogc
+    {
+        return opCmp(b) == 0;
+    }
+
+    size_t toHash() const @safe pure nothrow @nogc
+    {
+        size_t h = used;
+        foreach (i; 0 .. used)
+            h = h * 31 + cast(size_t) w[i];
+        return h;
+    }
+
+    private void append(ulong word) @safe pure nothrow @nogc
+    {
+        if (used == words)
+            bad = true;
+        else
+            w[used++] = word;
+    }
+
+    private void trim() @safe pure nothrow @nogc
+    {
+        while (used > 0 && w[used - 1] == 0)
+            used--;
     }
 }
 
@@ -646,7 +942,7 @@ private bool carry(char[] digits, int pointPos, ref ShortestDigits result) @safe
 
 // Whether `0.digits × 10^pointPos` is exactly halfway between `value` (positive and below `T.max`, subnormals
 // included) and one of its neighbours.
-version (unittest) private bool isMidpoint(T)(const(char)[] digits, int pointPos, T value)
+version (unittest) private bool isMidpoint(T)(scope const(char)[] digits, int pointPos, T value)
 {
     import std.math : nextDown, nextUp;
 
@@ -659,7 +955,7 @@ version (unittest) private bool isMidpoint(T)(const(char)[] digits, int pointPos
         const y = neighbour > 0 ? digitInput(neighbour, Ties.toEven) : DigitInput(0, x.e);
         const e = x.e < y.e ? x.e : y.e;
         // decimal × 2 against (value + neighbour) = sum × 2^e
-        BigInt left = BigInt(digits) * 2;
+        BigInt left = BigInt(digits.idup) * 2; // a copy: older BigInt constructors don't take scope slices
         BigInt right = (BigInt(x.f) << (x.e - e)) + (BigInt(y.f) << (y.e - e));
         const exponent10 = pointPos - cast(int) digits.length;
         if (exponent10 >= 0)
@@ -687,4 +983,79 @@ version (unittest) private bool isMidpoint(T)(const(char)[] digits, int pointPos
     // Most values have the same digits either way
     assert(shortestDigits(0.1, Ties.avoid) == shortestDigits(0.1));
     assert(shortestDigits(2.0f ^^ -10, Ties.avoid) == shortestDigits(2.0f ^^ -10));
+}
+
+// Wide gives exactly the BigInt digits over the whole range of doubles and floats (subnormals and powers of two
+// included) and never overflows
+@safe unittest
+{
+    import std.math : ldexp;
+    import std.random : Mt19937_64, uniform;
+
+    auto rng = Mt19937_64(3);
+    void compare(T)(T value)
+    {
+        foreach (ties; [Ties.toEven, Ties.avoid])
+        {
+            const input = digitInput(value, ties);
+            ShortestDigits viaWide, viaBigInt;
+            assert(generateDigits!Wide(input, viaWide));
+            assert(generateDigits!BigInt(input, viaBigInt));
+            assert(viaWide == viaBigInt);
+        }
+    }
+
+    foreach (exponent; -1074 .. 1024)
+    {
+        compare(ldexp(1.0, exponent)); // powers of two, the smallest subnormal first
+        compare(ldexp(uniform(1.0, 2.0, rng), exponent));
+    }
+    compare(double.max);
+    compare(double.min_normal);
+    compare(ldexp(0x1.fffffffffffffp0, -1023)); // the largest subnormal
+    foreach (exponent; -149 .. 128)
+    {
+        compare(ldexp(1.0f, exponent));
+        compare(ldexp(uniform(1.0f, 2.0f, rng), exponent));
+    }
+    compare(float.max);
+}
+
+// Wide arithmetic against BigInt
+@safe unittest
+{
+    import std.bigint : BigInt;
+    import std.random : Mt19937_64, uniform;
+
+    static BigInt big(const Wide x)
+    {
+        BigInt b;
+        foreach_reverse (i; 0 .. x.used)
+            b = (b << 64) + BigInt(x.w[i]);
+        return b;
+    }
+
+    auto rng = Mt19937_64(9);
+    foreach (_; 0 .. 2000)
+    {
+        auto a = Wide(uniform!ulong(rng)), b = Wide(uniform!ulong(rng));
+        a <<= uniform(0, 600, rng);
+        b <<= uniform(0, 600, rng);
+        const m = uniform!ulong(rng);
+        const sum = a + b, product = a * m;
+        assert(!sum.bad && big(sum) == big(a) + big(b));
+        assert(!product.bad && big(product) == big(a) * BigInt(m));
+        const larger = a >= b ? a : b, smaller = a >= b ? b : a;
+        assert(big(larger - smaller) == big(larger) - big(smaller));
+        assert((a < b) == (big(a) < big(b)) && (a == a) && (a * 0).used == 0);
+    }
+    // overflow is flagged
+    auto x = Wide(1);
+    x <<= Wide.words * 64 - 1;
+    assert(!x.bad);
+    x <<= 1;
+    assert(x.bad);
+    auto y = Wide(3);
+    y <<= Wide.words * 64 - 2;
+    assert(!y.bad && (y * 2).bad && (y + y).bad);
 }
