@@ -6,6 +6,11 @@ All notable changes to dbwire are documented here. The format follows
 
 ## Unreleased
 
+## 0.9.3 — 2026-11-10
+
+Adds UTF-16 encoding into buffers, `TextBuffer` and a shared float text
+layout for the connectors, and the follow-ups from the oracle-native review.
+
 ### Added
 
 - `dbwire:charset` (#66): `encodeUtf16leInto`/`encodeUtf16beInto` encode
