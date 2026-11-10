@@ -43,17 +43,18 @@ struct TextBuffer(size_t capacity)
     /// Appends `value` in decimal, padded with zeros to at least `width` digits.
     void number(ulong value, size_t width = 0) @safe pure nothrow @nogc
     {
-        char[20] digits = void;
-        size_t n;
-        do
+        size_t n = 1;
+        for (ulong rest = value / 10; rest; rest /= 10)
+            n++;
+        if (n < width)
+            n = width;
+        auto digits = buffer[length .. length + n]; // written from the end, zeros in front
+        foreach_reverse (ref c; digits)
         {
-            digits[$ - ++n] = cast(char)('0' + value % 10);
+            c = cast(char)('0' + value % 10);
             value /= 10;
         }
-        while (value);
-        if (width > n)
-            fill('0', width - n);
-        put(digits[$ - n .. $]);
+        length += n;
     }
 
     /// A copy of the text.
