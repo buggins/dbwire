@@ -6,6 +6,11 @@ All notable changes to dbwire are documented here. The format follows
 
 ## Unreleased
 
+## 0.9.5 — 2026-11-10
+
+Makes `TextBuffer.put` and `formatDigits` as fast as the connectors' own
+code.
+
 ### Changed
 
 - `dbwire:types` (#75): `TextBuffer.put` copies text in a loop (a slice
