@@ -290,9 +290,12 @@ final class PoolCore
 A connection taken from a `PoolCore`. It returns the connection to the pool
 when it goes out of scope (or on `release`), and cannot be copied.
 
-Keep a lease on the stack, or in a struct that is: returning the connection
-locks the pool and may allocate, which fails when the garbage collector
-finalizes an object that holds the lease.
+Keep a lease on the stack, or in a struct that is. A lease the garbage
+collector finalizes (held by a collected object) does nothing: the pool may
+already be finalized, and a finalizer must not lock or allocate. Its
+connection is then never returned: the slot stays taken and the connection
+stays open until the process ends. Call `release` before dropping an object
+that holds a lease.
 +/
 struct PoolLease
 {
@@ -309,6 +312,11 @@ struct PoolLease
 
     ~this() @safe
     {
+        import core.memory : GC;
+
+        // the GC finalizes in any order (at exit everything), so the pool may be gone: leave it alone
+        if (GC.inFinalizer)
+            return;
         release();
     }
 
@@ -766,4 +774,46 @@ version (unittest)
     assert(PoolOptions.fromDsn("db://h") == PoolOptions.init);
     foreach (bad; ["db://h?pool_max=0", "db://h?pool_max=x", "db://h?pool_wait_timeout=-1"])
         assertThrown!ClientException(PoolOptions.fromDsn(bad), bad);
+}
+
+version (unittest)
+{
+    private shared int leaseHoldersFinalized;
+
+    // An object holding a lease, as a connector's PooledConnection in a user's class.
+    private final class LeaseHolder
+    {
+        PoolLease lease;
+
+        ~this()
+        {
+            import core.atomic : atomicOp;
+
+            atomicOp!"+="(leaseHoldersFinalized, 1);
+        }
+    }
+
+    private void dropLeaseHolders(PoolCore pool) @safe
+    {
+        foreach (i; 0 .. 8)
+        {
+            auto holder = new LeaseHolder;
+            holder.lease = pool.acquire();
+        }
+    }
+}
+
+@system unittest
+{
+    import core.atomic : atomicLoad;
+    import core.memory : GC;
+
+    // A lease finalized by the GC leaves the pool alone (it may be finalized already): the connection
+    // stays checked out
+    auto t = TestPool.create(PoolOptions.init);
+    dropLeaseHolders(t.pool);
+    foreach (i; 0 .. 3)
+        GC.collect();
+    assert(atomicLoad(leaseHoldersFinalized) > 0, "the test needs the GC to collect a holder");
+    assert(t.pool.activeConnections == 8 && t.pool.idleConnections == 0);
 }
