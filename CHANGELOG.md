@@ -6,6 +6,11 @@ All notable changes to dbwire are documented here. The format follows
 
 ## Unreleased
 
+## 0.9.6 — 2026-11-12
+
+A pool lease held by an object the garbage collector finalizes no longer
+touches the pool.
+
 ### Fixed
 
 - A `PoolLease` finalized by the garbage collector (held by a collected
