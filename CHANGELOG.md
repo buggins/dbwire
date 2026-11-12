@@ -6,6 +6,14 @@ All notable changes to dbwire are documented here. The format follows
 
 ## Unreleased
 
+### Fixed
+
+- A `PoolLease` finalized by the garbage collector (held by a collected
+  object) no longer touches the pool, which may already be finalized (at exit
+  the GC finalizes everything, in any order: a segfault) and must not be
+  locked or allocated from a finalizer. Its connection then stays checked out;
+  release a lease explicitly before dropping an object that holds it (#79).
+
 ## 0.9.5 — 2026-11-10
 
 Makes `TextBuffer.put` and `formatDigits` as fast as the connectors' own
