@@ -6,6 +6,10 @@ All notable changes to dbwire are documented here. The format follows
 
 ## Unreleased
 
+## 0.9.7 — 2026-11-17
+
+Fixes a heap overflow on older LDC in projects tested with `-unittest`.
+
 ### Fixed
 
 - `dbwire:tls`: `TlsTransport` had a field only in unittest builds, so code
