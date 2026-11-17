@@ -6,6 +6,15 @@ All notable changes to dbwire are documented here. The format follows
 
 ## Unreleased
 
+### Fixed
+
+- `dbwire:tls`: `TlsTransport` had a field only in unittest builds, so code
+  compiled with `-unittest` (e.g. `dub test` of a project using dbwire) saw a
+  larger class than dbwire itself. On LDC 1.27–1.31 every `new TlsTransport`
+  then wrote 8 bytes past its memory block, corrupting the heap (seen as
+  segfaults in mysql-native's TLS tests). The field is gone; its test counts
+  the writes through a wrapping transport instead (#84).
+
 ## 0.9.6 — 2026-11-12
 
 A pool lease held by an object the garbage collector finalizes no longer

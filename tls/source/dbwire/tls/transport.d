@@ -333,11 +333,7 @@ final class TlsTransport : Transport, WaitableTransport
         {
             const r = sslRead(buffer);
             if (r.outputPending)
-            {
-                version (unittest)
-                    readsThatSent++;
                 flushOutput();
-            }
             if (r.bytes > 0)
                 return r.bytes;
             if (r.error == sslErrorZeroReturn)
@@ -603,11 +599,10 @@ final class TlsTransport : Transport, WaitableTransport
         return suite is null ? "" : fromCString(api.sslCipherGetName(suite));
     }
 
+    // Only non-virtual members here: a field or a virtual method would make the class
+    // layout differ between dbwire and code compiled with -unittest against it (#84)
     version (unittest)
     {
-        /// How many `read` calls had to send data (e.g. a queued key update).
-        package size_t readsThatSent;
-
         /// Asks the peer to update its keys too; tests a read that has to send.
         package void requestKeyUpdate() @trusted
         {
@@ -1085,6 +1080,7 @@ version (unittest)
     {
         TlsTransport client;
         TlsTransport server;
+        CountingTransport serverRaw; // set when connectPair counts the server's writes
         Exception clientError;
         Exception serverError;
 
@@ -1097,8 +1093,64 @@ version (unittest)
         }
     }
 
+    /// Passes everything through to `inner` and counts the writes.
+    private final class CountingTransport : Transport, WaitableTransport
+    {
+        private Transport inner;
+        shared size_t writes; // the server thread writes, the test thread reads
+
+        this(Transport inner) @safe
+        {
+            this.inner = inner;
+        }
+
+        override size_t read(scope ubyte[] buffer) @safe
+        {
+            return inner.read(buffer);
+        }
+
+        override void write(scope const(ubyte)[] data) @safe
+        {
+            import core.atomic : atomicOp;
+
+            inner.write(data);
+            writes.atomicOp!"+="(1);
+        }
+
+        override bool dataAvailable() @safe
+        {
+            return inner.dataAvailable();
+        }
+
+        override void close() @safe nothrow
+        {
+            inner.close();
+        }
+
+        override bool connected() const @safe nothrow
+        {
+            return inner.connected;
+        }
+
+        override void setTimeouts(Duration receive, Duration send) @safe
+        {
+            inner.setTimeouts(receive, send);
+        }
+
+        override @property bool canWaitForData() @safe
+        {
+            auto waitable = cast(WaitableTransport) inner;
+            return waitable !is null && waitable.canWaitForData;
+        }
+
+        override bool waitForData(Duration timeout) @safe
+        {
+            return (cast(WaitableTransport) inner).waitForData(timeout);
+        }
+    }
+
     private TlsPair connectPair(const TlsOptions clientOptions, string host = "localhost",
-            TlsContext server = null) @system
+            TlsContext server = null, bool countServerWrites = false) @system
     {
         if (server is null)
             server = serverContext(false);
@@ -1114,7 +1166,9 @@ version (unittest)
         auto serverThread = new Thread({
             try
             {
-                auto raw = new PhobosTransport(listener.accept());
+                Transport raw = new PhobosTransport(listener.accept());
+                if (countServerWrites)
+                    raw = pair.serverRaw = new CountingTransport(raw);
                 pair.server = TlsTransport.accept(raw, backend, server, 10.seconds);
                 pair.server.setTimeouts(10.seconds, 10.seconds);
             }
@@ -1455,7 +1509,7 @@ unittest
 {
     if (!haveOpenSsl())
         return;
-    auto pair = connectPair(trustingOptions());
+    auto pair = connectPair(trustingOptions(), "localhost", null, true);
     scope (exit)
         pair.close();
     assert(pair.clientError is null && pair.serverError is null);
@@ -1473,9 +1527,12 @@ unittest
         assert(received == data);
     }
 
-    pair.server.requestKeyUpdate();
+    import core.atomic : atomicLoad;
+
+    pair.server.requestKeyUpdate(); // only queued: nothing is written yet
+    const writesBefore = pair.serverRaw.writes.atomicLoad;
     transfer(pair.client, pair.server, [1, 2, 3]);
-    assert(pair.server.readsThatSent > 0, "the read didn't send the key update request");
+    assert(pair.serverRaw.writes.atomicLoad > writesBefore, "the read didn't send the key update request");
     // New keys in both directions: server to client since the request, client to server
     // since the reply, which goes with the client's next write
     transfer(pair.server, pair.client, [4, 5, 6, 7]);
