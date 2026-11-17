@@ -109,6 +109,7 @@ Run lint and format before committing D code. dfmt 0.15.2 mangles lambdas with a
 - `@safe` by default, small `@trusted` blocks only in I/O, FFI and reinterpret-cast hot paths, each with a comment explaining why it is safe.
 - **Every public symbol gets a Ddoc comment.** Docs are generated on dpldocs.info, and dscanner flags undocumented public declarations. Use `Params:`, `Returns:`, `Throws:`, `See_Also:` where useful.
 - **Unit tests inside modules**, next to the code. A `///` unittest after a public symbol becomes its usage example; prefer that for public API.
+- **No layout-changing members under `version (unittest)` or `debug`** in a class or struct: no fields, and no virtual methods (non-final classes). dub compiles dbwire without `-unittest`, while code that imports it often is (`dub test`, connectors' integration tests), so the two would disagree on the layout. Older LDC (1.27–1.31) allocates a class from the library's size but copies the initializer of the size its own compilation sees, a heap overflow (#84). Test-only helpers go in module-level `version (unittest)` blocks, or as non-virtual methods.
 - When code moves from clickhoused, keep its tests and behaviour; note renamed symbols in `CHANGELOG.md`.
 
 ## Related local repositories (read-only unless the user asks)

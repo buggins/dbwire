@@ -334,8 +334,7 @@ final class TlsTransport : Transport, WaitableTransport
             const r = sslRead(buffer);
             if (r.outputPending)
             {
-                version (unittest)
-                    readsThatSent++;
+                readsThatSent++;
                 flushOutput();
             }
             if (r.bytes > 0)
@@ -603,11 +602,13 @@ final class TlsTransport : Transport, WaitableTransport
         return suite is null ? "" : fromCString(api.sslCipherGetName(suite));
     }
 
+    /// How many `read` calls had to send data (e.g. a queued key update), for the tests.
+    // Not under version (unittest): a field there would make the class layout differ between
+    // dbwire and code compiled with -unittest against it (a heap overflow on older LDC, #84).
+    package size_t readsThatSent;
+
     version (unittest)
     {
-        /// How many `read` calls had to send data (e.g. a queued key update).
-        package size_t readsThatSent;
-
         /// Asks the peer to update its keys too; tests a read that has to send.
         package void requestKeyUpdate() @trusted
         {
