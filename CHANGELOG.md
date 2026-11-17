@@ -12,8 +12,8 @@ All notable changes to dbwire are documented here. The format follows
   compiled with `-unittest` (e.g. `dub test` of a project using dbwire) saw a
   larger class than dbwire itself. On LDC 1.27–1.31 every `new TlsTransport`
   then wrote 8 bytes past its memory block, corrupting the heap (seen as
-  segfaults in mysql-native's TLS tests). The field now exists in every
-  build (#84).
+  segfaults in mysql-native's TLS tests). The field is gone; its test counts
+  the writes through a wrapping transport instead (#84).
 
 ## 0.9.6 — 2026-11-12
 
