@@ -6,6 +6,10 @@ All notable changes to dbwire are documented here. The format follows
 
 ## Unreleased
 
+## 0.9.8 — 2026-11-18
+
+One I/O mode option for all connectors.
+
 ### Added
 
 - `dbwire:client`: `parseIoMode` parses the I/O mode of a connection string
