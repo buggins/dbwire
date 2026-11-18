@@ -6,6 +6,12 @@ All notable changes to dbwire are documented here. The format follows
 
 ## Unreleased
 
+### Added
+
+- `dbwire:client`: `parseIoMode` parses the I/O mode of a connection string
+  (`auto`, `phobos`, `vibe`; `auto_` too), so that the connectors accept the
+  same values under the same keys, `io_mode` and `io` (#83).
+
 ## 0.9.7 — 2026-11-17
 
 Fixes a heap overflow on older LDC in projects tested with `-unittest`.
