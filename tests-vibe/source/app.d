@@ -8,7 +8,8 @@ Run with `dub run --root=tests-vibe` (vibe-core 2.x) or
 module app;
 
 import core.thread : Thread;
-import core.time : Duration, MonoTime, msecs, seconds;
+import core.sync.event : Event;
+import core.time : Duration, hnsecs, MonoTime, msecs, seconds;
 import std.socket : InternetAddress, Socket, SocketOption, SocketOptionLevel, SocketShutdown, TcpSocket;
 import std.exception : collectException;
 import std.stdio : stderr, stdout, writefln;
@@ -37,10 +38,14 @@ int main()
         failures++;
     }
 
+    auto watchdog = new Watchdog;
     void runTests() nothrow
     {
         scope (exit)
+        {
+            watch(&shutdownPhase);
             exitEventLoop();
+        }
         try
             failures += runAll();
         catch (Exception e)
@@ -54,6 +59,7 @@ int main()
 
     runTask(&runTests);
     runEventLoop();
+    watchdog.stop();
     return failures == 0 ? 0 : 1;
 }
 
@@ -76,12 +82,11 @@ private int runAll()
         Test("connection pool shared by tasks", &testPoolTasks),
         Test("TLS to a public server (DBWIRE_TLS_PUBLIC_HOST)", &testTlsPublicHost),
     ];
-    startWatchdog();
     int failures;
-    foreach (test; tests)
+    foreach (ref test; tests)
     {
         report("RUN  %s", test.name);
-        watchdogStart(test.name);
+        watch(&test.name);
         try
         {
             test.run();
@@ -93,7 +98,6 @@ private int runAll()
             failures++;
         }
     }
-    watchdogStart(null);
     report("%s tests, %s failed", tests.length, failures);
     return failures;
 }
@@ -105,44 +109,71 @@ private void report(Args...)(string format, Args args)
     stdout.flush();
 }
 
-/// Longest time a test may take before the watchdog ends the process.
+/// Longest time a test, or the shutdown after the last one, may take before the watchdog ends the process.
 private enum Duration testTimeLimit = 30.seconds;
 
-private __gshared string watchedTest; // the running test, or null
-private __gshared MonoTime watchedSince;
+private immutable string shutdownPhase = "event loop shutdown";
+private shared(immutable(string)*) watchedPhase; // the running test or phase, or null
+private shared long watchedSince; // when it started, in hnsecs since MonoTime.zero
 
-private void watchdogStart(string name)
+/// Starts the watchdog's clock for a test or phase.
+private void watch(immutable(string)* phase) nothrow @nogc
 {
-    import core.atomic : atomicFence;
+    import core.atomic : atomicStore;
 
-    watchedSince = MonoTime.currTime;
-    watchedTest = name;
-    atomicFence();
+    // The time first: the watchdog reads the phase first, so it never pairs a new phase with an old time
+    atomicStore(watchedSince, (MonoTime.currTime - MonoTime.zero).total!"hnsecs");
+    atomicStore(watchedPhase, phase);
 }
 
-/// A thread that ends the process when a test hangs, naming the test.
-private void startWatchdog()
-{
-    static void watch()
-    {
-        import core.stdc.stdlib : exit;
+/++
+A thread that ends the process when a test, or the shutdown after the last one, takes longer than
+`testTimeLimit`, naming it.
 
-        for (;;)
+It runs for the whole of `main`, which stops it after the event loop has ended. It must not be a
+daemon thread: one that is still running while druntime shuts down can crash the process at exit,
+in the GC's suspend signal handler (#93).
++/
+private final class Watchdog
+{
+    private Event stopping;
+    private Thread thread;
+
+    this()
+    {
+        stopping.initialize(true, false);
+        thread = new Thread(&run);
+        thread.start();
+    }
+
+    /// Ends the watchdog thread and waits for it.
+    void stop()
+    {
+        stopping.set();
+        thread.join();
+    }
+
+    private void run()
+    {
+        import core.atomic : atomicLoad;
+        import core.stdc.stdlib : _Exit;
+
+        while (!stopping.wait(1.seconds))
         {
-            Thread.sleep(1.seconds);
-            const name = watchedTest;
-            if (name !is null && MonoTime.currTime - watchedSince > testTimeLimit)
+            auto phase = atomicLoad(watchedPhase);
+            if (phase is null)
+                continue;
+            const since = MonoTime.zero + hnsecs(atomicLoad(watchedSince));
+            if (MonoTime.currTime - since > testTimeLimit)
             {
-                stderr.writefln("TIMEOUT %s: still running after %s", name, testTimeLimit);
+                stderr.writefln("TIMEOUT %s: still running after %s", *phase, testTimeLimit);
                 stderr.flush();
-                exit(2);
+                // Not exit(): its atexit handlers (OpenSSL's cleanup) would run while the hung thread
+                // may still use what they free
+                _Exit(2);
             }
         }
     }
-
-    auto watchdog = new Thread(&watch);
-    watchdog.isDaemon = true;
-    watchdog.start();
 }
 
 private struct Test
