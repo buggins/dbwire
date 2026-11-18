@@ -17,6 +17,21 @@ and [hibernated](https://github.com/buggins/hibernated).
 > [roadmap issue](https://github.com/buggins/dbwire/issues/13); changes are
 > listed in the [changelog](CHANGELOG.md).
 
+## Connectors
+
+Native D database connectors built on dbwire:
+
+| Database             | Repository                                                        | DUB package                                                            |
+|----------------------|-------------------------------------------------------------------|------------------------------------------------------------------------|
+| ClickHouse           | [clickhoused](https://github.com/buggins/clickhoused)             | [clickhoused](https://code.dlang.org/packages/clickhoused)             |
+| PostgreSQL           | [postgresql-native](https://github.com/buggins/postgresql-native) | [postgresql-native](https://code.dlang.org/packages/postgresql-native) |
+| Oracle Database      | [oracle-native](https://github.com/buggins/oracle-native)         | [oracle-native](https://code.dlang.org/packages/oracle-native)         |
+| Microsoft SQL Server | [mssql-native](https://github.com/buggins/mssql-native)           | [mssql-native](https://code.dlang.org/packages/mssql-native)           |
+
+All four have drivers in [ddbc](https://github.com/buggins/ddbc)
+([DUB package](https://code.dlang.org/packages/ddbc)), the JDBC-like database
+interface for D.
+
 ## Subpackages
 
 Depend only on what you need:
