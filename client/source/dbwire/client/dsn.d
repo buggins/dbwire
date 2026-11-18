@@ -3,8 +3,8 @@ URL-style connection strings (DSNs) and the parsing of their values.
 
 A DSN looks like `scheme://user:password@host1:port1,host2/path?key=value&...`.
 `Dsn.parse` splits it into its decoded parts; each connector maps the
-parameters to its own options, using `parseSeconds`, `parseFlag` and
-`parseEnumValue` for typical values.
+parameters to its own options, using `parseSeconds`, `parseFlag`,
+`parseEnumValue` and `parseIoMode` for typical values.
 
 Copyright: Copyright © 2026, Vadim Lopatin
 License:   $(LINK2 https://www.boost.org/LICENSE_1_0.txt, Boost License 1.0).
@@ -15,6 +15,7 @@ import core.time : Duration;
 
 import dbwire.client.hosts : HostPort, parseHostPort;
 import dbwire.exception : ClientException;
+import dbwire.io.backend : IoMode;
 
 /// The parts of a connection string, percent-decoded.
 struct Dsn
@@ -299,6 +300,54 @@ E parseEnumValue(E)(string key, string value) if (is(E == enum))
     assert(parseFlag("verbose", params["verbose"]));
     assert(parseEnumValue!Mode("mode", params["mode"]) == Mode.safe);
     assert(params["name"] == "a b");
+}
+
+/++
+Parses the I/O mode: `auto`, or the name of another `IoMode` member
+(`phobos`, `vibe`). `auto_`, the member's own name, is accepted too.
+
+The connectors read it from the key `io_mode`, with `io` as a short form, so
+that one spelling works with all of them (and through ddbc; #83).
+
+Throws: `ClientException` naming `key` for any other value.
++/
+IoMode parseIoMode(string key, string value) @safe
+{
+    if (value == "auto")
+        return IoMode.auto_;
+    static foreach (member; __traits(allMembers, IoMode))
+        if (value == member)
+            return __traits(getMember, IoMode, member);
+    throw new ClientException("Invalid value '" ~ value ~ "' for '" ~ key ~ "' (" ~ ioModeNames ~ " expected)");
+}
+
+///
+@safe unittest
+{
+    import std.exception : assertThrown, collectExceptionMsg;
+
+    assert(parseIoMode("io_mode", "auto") == IoMode.auto_);
+    assert(parseIoMode("io_mode", "auto_") == IoMode.auto_);
+    assert(parseIoMode("io", "phobos") == IoMode.phobos);
+    assert(parseIoMode("io", "vibe") == IoMode.vibe);
+    foreach (bad; ["", "threads", "Auto", "vibe "])
+        assertThrown!ClientException(parseIoMode("io_mode", bad));
+    const message = collectExceptionMsg(parseIoMode("io", "fibers"));
+    assert(message == "Invalid value 'fibers' for 'io' (auto, phobos or vibe expected)", message);
+}
+
+// The accepted values for the error message, from the IoMode members: "auto, phobos or vibe"
+private enum string ioModeNames = ioModeNameList();
+
+private string ioModeNameList() @safe pure nothrow
+{
+    string[] names;
+    foreach (member; __traits(allMembers, IoMode))
+        names ~= member == "auto_" ? "auto" : member;
+    string text;
+    foreach (i, name; names)
+        text ~= (i == 0 ? "" : i + 1 == names.length ? " or " : ", ") ~ name;
+    return text;
 }
 
 private string decode(string encoded, string context) @safe
