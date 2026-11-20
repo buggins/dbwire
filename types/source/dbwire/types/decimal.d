@@ -45,18 +45,14 @@ is -1.50 and `Decimal(Int256(5), -3)` is 5000.
 
 Comparison and equality are numeric (1.5 equals 1.50). Functions that drop
 digits take a `RoundingMode`; the default, `RoundingMode.towardZero`, truncates.
+
+The two parts are properties that check their limits when set, so every
+`Decimal` stays within them.
 +/
 struct Decimal
 {
-    /// The value times 10^`scale`: at most 76 digits.
-    Int256 unscaled;
-
-    /++
-    Position of the decimal point: the number of digits after it when positive;
-    a negative scale multiplies the unscaled value by a power of ten. Between
-    `-maxDecimalScale` and `maxDecimalScale`.
-    +/
-    int scale;
+    private Int256 unscaledValue;
+    private int scaleValue;
 
     /++
     Creates a value.
@@ -66,11 +62,54 @@ struct Decimal
     +/
     this(Int256 unscaled, int scale) @safe pure
     {
-        checkScale(scale);
-        if (unscaled > maxUnscaled || unscaled < minUnscaled)
-            throw new ClientException("Decimal value has more than 76 digits: " ~ unscaled.toString());
-        this.unscaled = unscaled;
         this.scale = scale;
+        this.unscaled = unscaled;
+    }
+
+    /++
+    The value times 10^`scale`: at most 76 digits. It is `const`, so that
+    writes into the copy (`d.unscaled.words[0] = 1`) don't compile; assign
+    the whole value instead.
+    +/
+    @property const(Int256) unscaled() const @safe pure nothrow @nogc
+    {
+        return unscaledValue;
+    }
+
+    /++
+    Sets the value times 10^`scale`.
+
+    Throws: `ClientException` if `value` has more than 76 digits; the
+    `Decimal` is then unchanged.
+    +/
+    @property void unscaled(Int256 value) @safe pure
+    {
+        if (value > maxUnscaled || value < minUnscaled)
+            throw new ClientException("Decimal value has more than 76 digits: " ~ value.toString());
+        unscaledValue = value;
+    }
+
+    /++
+    Position of the decimal point: the number of digits after it when positive;
+    a negative scale multiplies the unscaled value by a power of ten. Between
+    `-maxDecimalScale` and `maxDecimalScale`.
+    +/
+    @property int scale() const @safe pure nothrow @nogc
+    {
+        return scaleValue;
+    }
+
+    /++
+    Sets the position of the decimal point; the unscaled value stays, so the
+    number changes by a power of ten.
+
+    Throws: `ClientException` if `value` is out of range; the `Decimal` is
+    then unchanged.
+    +/
+    @property void scale(int value) @safe pure
+    {
+        checkScale(value);
+        scaleValue = value;
     }
 
     /++
@@ -638,6 +677,19 @@ private string toText(T)(T value) @safe
     assertThrown!ClientException(Decimal(Int256(1), maxDecimalScale + 1));
     assertThrown!ClientException(Decimal(Int256(1), -maxDecimalScale - 1));
     assertThrown!ClientException(Decimal(Int256.max, 0)); // 77 digits
+
+    // The setters check the same limits and leave the value unchanged when they throw
+    auto d = Decimal.fromString("1.5");
+    assertThrown!ClientException(d.scale = int.min);
+    assertThrown!ClientException(d.scale = maxDecimalScale + 1);
+    assertThrown!ClientException(d.unscaled = Int256.max);
+    assert(d.unscaled == Int256(15) && d.scale == 1);
+    d.scale = -maxDecimalScale;
+    d.unscaled = Int256(-7);
+    assert(d == Decimal(Int256(-7), -maxDecimalScale));
+    static assert(!__traits(compiles, { d.unscaled.words[0] = 1; })); // would change a copy only
+    Int256 copy = d.unscaled; // a mutable copy where one is needed
+    copy.words[0] = 1;
     char[256] longFraction = '0';
     assertThrown!ClientException(Decimal.fromString("0." ~ longFraction[]));
     assert(Decimal.fromString("0." ~ longFraction[0 .. 255]).scale == 255);
