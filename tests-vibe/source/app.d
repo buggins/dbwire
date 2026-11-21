@@ -77,6 +77,7 @@ private int runAll()
         Test("interrupted task", &testInterrupt),
         Test("use from another thread", &testOtherThread),
         Test("yieldNow", &testYield),
+        Test("sleep: other tasks run, interruption", &testSleep),
         Test("FiberLock", &testLock),
         Test("FiberPoolSync", &testPoolSync),
         Test("connection pool shared by tasks", &testPoolTasks),
@@ -541,6 +542,60 @@ private void testInterrupt()
     sleep(50.msecs);
     reader.interrupt();
     reader.join();
+    check(outcome == "interrupted", "outcome: " ~ outcome);
+}
+
+private void testSleep()
+{
+    import dbwire.io.backend : SleepingBackend;
+
+    IoBackend backend = backendFor(IoMode.auto_);
+    check(cast(SleepingBackend) backend !is null, "the vibe backend can't sleep");
+    // another task runs while this one sleeps
+    int ticks;
+    string tickError;
+    void tick() nothrow
+    {
+        try
+            foreach (i; 0 .. 3)
+            {
+                sleep(10.msecs);
+                ticks++;
+            }
+        catch (Exception e)
+            tickError = e.msg;
+    }
+
+    auto ticker = runTask(&tick);
+    const start = MonoTime.currTime;
+    backend.sleepFor(100.msecs);
+    const elapsed = MonoTime.currTime - start;
+    const ticksDuringSleep = ticks;
+    ticker.join();
+    check(tickError is null, "the other task failed: " ~ tickError);
+    check(elapsed >= 90.msecs && elapsed < 3.seconds, "slept " ~ elapsed.toString());
+    check(ticksDuringSleep >= 1, "the other task did not run while sleeping");
+    backend.sleepFor(-1.msecs); // returns at once
+
+    // Task.interrupt while sleeping: InterruptException
+    string outcome;
+    void sleeper() nothrow
+    {
+        try
+        {
+            backend.sleepFor(10.seconds);
+            outcome = "returned";
+        }
+        catch (InterruptException)
+            outcome = "interrupted";
+        catch (Exception e)
+            outcome = "other: " ~ e.msg;
+    }
+
+    auto task = runTask(&sleeper);
+    sleep(20.msecs);
+    task.interrupt();
+    task.join();
     check(outcome == "interrupted", "outcome: " ~ outcome);
 }
 

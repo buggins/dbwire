@@ -98,6 +98,91 @@ interface PoolSync
     void notifyAll() @safe;
 }
 
+/++
+An `IoBackend` that can pause its caller: the whole thread in thread mode,
+only the current task in fiber mode. Implemented by the Phobos and vibe.d
+backends; use `sleepFor`, which also works with backends that don't
+implement it.
++/
+interface SleepingBackend
+{
+    /++
+    Pauses for `duration`; returns at once if it isn't positive.
+
+    Throws: in fiber mode, vibe.d's `InterruptException` when the task is
+    interrupted.
+    +/
+    void sleep(Duration duration) @safe;
+}
+
+/++
+Pauses for `duration` in `backend`'s I/O mode (other tasks run meanwhile in
+fiber mode); returns at once if `duration` isn't positive. Durations beyond
+`longestWait` (50 years) are cut to it. Backends that don't implement
+`SleepingBackend` wait on a `PoolSync` nobody notifies.
+
+Use this instead of `Thread.sleep` or vibe.d's `sleep` in code that runs in
+both modes. (It isn't named `sleep`, so that a selective
+`import vibe.core.core : sleep` doesn't hide it.)
++/
+void sleepFor(IoBackend backend, Duration duration) @safe
+{
+    import core.time : MonoTime;
+
+    if (duration <= Duration.zero)
+        return;
+    duration = clampWait(duration);
+    if (auto sleeping = cast(SleepingBackend) backend)
+        return sleeping.sleep(duration);
+    sleepOn(backend.newPoolSync(), duration);
+}
+
+/// Pauses for `duration`, which is positive, by waiting on `sync`, which nobody notifies.
+private void sleepOn(PoolSync sync, Duration duration) @safe
+{
+    import core.time : MonoTime;
+
+    const deadline = MonoTime.currTime + duration;
+    sync.lock();
+    scope (exit)
+        sync.unlock();
+    // A condition may wake up early: wait again for the rest
+    for (auto now = MonoTime.currTime; now < deadline; now = MonoTime.currTime)
+        sync.wait(deadline - now);
+}
+
+///
+@safe unittest
+{
+    import core.time : msecs, MonoTime;
+
+    auto backend = backendFor(IoMode.auto_); // Phobos outside a vibe.d task
+    const start = MonoTime.currTime;
+    backend.sleepFor(20.msecs);
+    assert(MonoTime.currTime - start >= 20.msecs);
+}
+
+@safe unittest
+{
+    import core.time : msecs, MonoTime;
+    import dbwire.io.phobos : PhobosBackend;
+
+    // A backend without SleepingBackend waits on a PoolSync
+    auto plain = new PlainBackend;
+    assert(cast(SleepingBackend) plain is null);
+    auto start = MonoTime.currTime;
+    plain.sleepFor(30.msecs);
+    assert(MonoTime.currTime - start >= 30.msecs && plain.syncs == 1);
+
+    // Nothing to wait for: no PoolSync either
+    plain.sleepFor(Duration.zero);
+    plain.sleepFor(-5.msecs);
+    assert(plain.syncs == 1);
+    start = MonoTime.currTime;
+    (new PhobosBackend).sleep(-1.msecs);
+    assert(MonoTime.currTime - start < 1000.msecs);
+}
+
 /// Whether fiber mode (vibe-core) is compiled in.
 version (Have_vibe_core)
     private enum bool vibeCompiledIn = true;
@@ -216,18 +301,23 @@ bool waitForData(Transport transport, Duration timeout, IoBackend backend) @safe
     const forever = timeout == Duration.max;
     const deadline = forever ? MonoTime.max : MonoTime.currTime + clampWait(timeout);
     auto pause = 1.msecs;
-    PoolSync sync;
+    auto sleeping = cast(SleepingBackend) backend;
+    PoolSync sync; // for other backends: one for the whole wait
     for (;;)
     {
         const now = MonoTime.currTime;
         if (now >= deadline)
             return false;
         const remaining = deadline - now;
-        if (sync is null)
-            sync = backend.newPoolSync();
-        sync.lock();
-        sync.wait(forever || pause < remaining ? pause : remaining);
-        sync.unlock();
+        const interval = forever || pause < remaining ? pause : remaining;
+        if (sleeping !is null)
+            sleeping.sleep(interval);
+        else
+        {
+            if (sync is null)
+                sync = backend.newPoolSync();
+            sleepOn(sync, interval);
+        }
         if (transport.dataAvailable())
             return true;
         if (pause < 50.msecs)
@@ -254,7 +344,64 @@ bool waitForData(Transport transport, Duration timeout, IoBackend backend) @safe
     import dbwire.io.phobos : PhobosBackend;
 
     // a transport that can't wait: polled until the timeout
-    static final class Polled : Transport
+    auto polled = new PolledTransport;
+    const start = MonoTime.currTime;
+    assert(!waitForData(polled, 60.msecs, new PhobosBackend));
+    assert(MonoTime.currTime - start >= 60.msecs && polled.checks > 2);
+    polled.checks = 0;
+    polled.dataAfter = 3;
+    assert(waitForData(polled, Duration.max, new PhobosBackend) && polled.checks == 3);
+
+    // a backend without SleepingBackend: one PoolSync for the whole wait
+    auto plain = new PlainBackend;
+    polled.checks = 0;
+    polled.dataAfter = int.max;
+    assert(!waitForData(polled, 40.msecs, plain) && polled.checks > 2 && plain.syncs == 1);
+}
+
+version (unittest)
+{
+    import dbwire.io.phobos : PhobosBackend;
+
+    // An IoBackend without SleepingBackend; counts the PoolSyncs it creates
+    private final class PlainBackend : IoBackend
+    {
+        PhobosBackend inner;
+        int syncs;
+
+        this() @safe
+        {
+            inner = new PhobosBackend;
+        }
+
+        override @property string name() const @safe pure nothrow
+        {
+            return "plain";
+        }
+
+        override Transport connect(string host, ushort port, Duration timeout) @safe
+        {
+            return inner.connect(host, port, timeout);
+        }
+
+        override void yieldNow() @safe
+        {
+        }
+
+        override PoolSync newPoolSync() @safe
+        {
+            syncs++;
+            return inner.newPoolSync();
+        }
+
+        override IoLock newLock() @safe
+        {
+            return inner.newLock();
+        }
+    }
+
+    // A transport that can't wait for data; data arrives at the `dataAfter`th check
+    private final class PolledTransport : Transport
     {
         int checks;
         int dataAfter = int.max;
@@ -286,12 +433,4 @@ bool waitForData(Transport transport, Duration timeout, IoBackend backend) @safe
         {
         }
     }
-
-    auto polled = new Polled;
-    const start = MonoTime.currTime;
-    assert(!waitForData(polled, 60.msecs, new PhobosBackend));
-    assert(MonoTime.currTime - start >= 60.msecs && polled.checks > 2);
-    polled.checks = 0;
-    polled.dataAfter = 3;
-    assert(waitForData(polled, Duration.max, new PhobosBackend) && polled.checks == 3);
 }

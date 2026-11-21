@@ -10,7 +10,7 @@ import core.time : Duration;
 import std.socket;
 
 import dbwire.exception : ClientException, ConnectionException;
-import dbwire.io.backend : clampWait, IoBackend, IoLock, longestWait, PoolSync;
+import dbwire.io.backend : clampWait, IoBackend, IoLock, longestWait, PoolSync, SleepingBackend;
 import dbwire.io.transport : Transport, WaitableTransport;
 import dbwire.io.unixsocket : displayPath, PeerCredentials, socketPeerUserId, UnixSocketBackend;
 
@@ -154,7 +154,7 @@ final class PhobosTransport : Transport, WaitableTransport, PeerCredentials
 }
 
 /// Thread-mode backend: connects with Phobos sockets.
-final class PhobosBackend : IoBackend, UnixSocketBackend
+final class PhobosBackend : IoBackend, UnixSocketBackend, SleepingBackend
 {
     override @property string name() const @safe pure nothrow
     {
@@ -164,6 +164,17 @@ final class PhobosBackend : IoBackend, UnixSocketBackend
     /// Does nothing: threads are scheduled by the operating system.
     override void yieldNow() @safe
     {
+    }
+
+    /// Blocks the thread for `duration` (`Thread.sleep`).
+    override void sleep(Duration duration) @safe
+    {
+        import core.thread : Thread;
+
+        if (duration <= Duration.zero)
+            return; // Thread.sleep requires a duration that isn't negative
+        // Thread.sleep only blocks the calling thread
+        () @trusted { Thread.sleep(clampWait(duration)); }();
     }
 
     /// A mutex with a condition variable.
