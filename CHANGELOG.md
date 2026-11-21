@@ -6,6 +6,21 @@ All notable changes to dbwire are documented here. The format follows
 
 ## Unreleased
 
+### Changed
+
+- `dbwire:types`: `Decimal.unscaled` and `Decimal.scale` are properties that
+  check their limits when set (at most 76 digits, a scale within
+  ±`maxDecimalScale`) and throw `ClientException` otherwise, leaving the value
+  unchanged. Before, they were plain fields: a value set directly could make
+  `toString` fail with a range error, `toDouble` and comparisons return wrong
+  results, and `toLong` hang (`scale = int.min`). Reading and assigning work
+  as before, except in `nothrow` or `@nogc` code, since the setters may
+  throw. No longer compile: `d.scale += 1`, `d.scale++`, `&d.scale`, passing
+  a part by `ref`, and writes into the words of `unscaled`
+  (`d.unscaled.words[0] = 1`: `unscaled` returns a `const` copy). `.tupleof`
+  and `FieldNameTuple` show the private fields `unscaledValue` and
+  `scaleValue` (#53).
+
 ## 0.9.8 — 2026-11-18
 
 One I/O mode option for all connectors.
