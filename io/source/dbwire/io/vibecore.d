@@ -26,7 +26,7 @@ import vibe.core.stream : IOMode;
 import vibe.core.task : InterruptException;
 
 import dbwire.exception : ClientException, ConnectionException;
-import dbwire.io.backend : IoBackend, IoLock, PoolSync;
+import dbwire.io.backend : clampWait, IoBackend, IoLock, PoolSync, SleepingBackend;
 import dbwire.io.transport : Transport, WaitableTransport;
 import dbwire.io.unixsocket : displayPath, PeerCredentials, socketPeerUserId, UnixSocketBackend;
 
@@ -161,7 +161,7 @@ final class VibeTransport : Transport, WaitableTransport, PeerCredentials
 }
 
 /// Fiber-mode backend: connects with vibe-core.
-final class VibeBackend : IoBackend, UnixSocketBackend
+final class VibeBackend : IoBackend, UnixSocketBackend, SleepingBackend
 {
     override @property string name() const @safe pure nothrow
     {
@@ -241,6 +241,20 @@ final class VibeBackend : IoBackend, UnixSocketBackend
         import vibe.core.core : yield;
 
         yield();
+    }
+
+    /++
+    Suspends the current task for `duration` (vibe.d's `sleep`); other tasks
+    run meanwhile.
+
+    Throws: `InterruptException` when the task is interrupted.
+    +/
+    override void sleep(Duration duration) @safe
+    {
+        import vibe.core.core : vibeSleep = sleep;
+
+        if (duration > Duration.zero)
+            vibeSleep(clampWait(duration));
     }
 
     /// A task-level event; usable only by tasks of the creating thread.

@@ -6,6 +6,16 @@ All notable changes to dbwire are documented here. The format follows
 
 ## Unreleased
 
+### Added
+
+- `dbwire:io`: `sleepFor(backend, duration)` pauses in the backend's I/O mode:
+  the thread in thread mode, only the current task in fiber mode. Backends
+  provide it through the new optional interface `SleepingBackend`
+  (implemented by `PhobosBackend` and `VibeBackend`); for other backends
+  `sleepFor` waits on a `PoolSync`, so `IoBackend` implementations outside
+  dbwire keep working unchanged. `waitForData` pauses through it when it polls
+  a transport that can't wait (#97).
+
 ### Changed
 
 - `dbwire:types`: `Decimal.unscaled` and `Decimal.scale` are properties that
