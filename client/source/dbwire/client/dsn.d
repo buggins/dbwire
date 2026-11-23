@@ -4,7 +4,9 @@ URL-style connection strings (DSNs) and the parsing of their values.
 A DSN looks like `scheme://user:password@host1:port1,host2/path?key=value&...`.
 `Dsn.parse` splits it into its decoded parts; each connector maps the
 parameters to its own options, using `parseSeconds`, `parseFlag`,
-`parseEnumValue` and `parseIoMode` for typical values.
+`parseEnumValue` and `parseIoMode` for typical values, and
+`checkIoModeKeys` or `normalizeIoModeKey` for the I/O mode keys `io_mode` and
+`io`.
 
 Copyright: Copyright © 2026, Vadim Lopatin
 License:   $(LINK2 https://www.boost.org/LICENSE_1_0.txt, Boost License 1.0).
@@ -334,6 +336,196 @@ IoMode parseIoMode(string key, string value) @safe
         assertThrown!ClientException(parseIoMode("io_mode", bad));
     const message = collectExceptionMsg(parseIoMode("io", "fibers"));
     assert(message == "Invalid value 'fibers' for 'io' (auto, phobos or vibe expected)", message);
+}
+
+/++
+Checks the I/O mode keys of one source of parameters: `io_mode` and its short
+form `io`. Each value must be a valid I/O mode (`parseIoMode`; an invalid one
+is reported under its own key), and all of them must give the same mode
+(`auto` and `auto_` are the same), rather than the associative array's order
+deciding which one counts.
+
+Params:
+    params = the parameters of one source, e.g. a connection string's query
+    ignoreKeyCase = whether keys match with ASCII letters in any case
+        (`IO_MODE`), for connectors whose keys ignore case; then
+        `io=vibe&IO=phobos` is a conflict too
+
+Throws: `ClientException` for an invalid value, or for two different modes.
++/
+void checkIoModeKeys(const string[string] params, bool ignoreKeyCase = false) @safe
+{
+    checkModes(params, ioModeKeys(params, ignoreKeyCase));
+}
+
+// checkIoModeKeys for the keys found by ioModeKeys.
+private void checkModes(const string[string] params, const string[] keys) @safe
+{
+    auto modes = new IoMode[keys.length];
+    foreach (i, key; keys)
+        modes[i] = parseIoMode(key, params[key]); // all values first: an invalid one is reported as such
+    foreach (i; 1 .. keys.length)
+        if (modes[i] != modes[0])
+            throw new ClientException("'" ~ keys[0] ~ "' and '" ~ keys[i] ~ "' give different I/O modes ('"
+                    ~ params[keys[0]] ~ "' and '" ~ params[keys[i]] ~ "')");
+}
+
+///
+@safe unittest
+{
+    import std.exception : assertNotThrown, assertThrown, collectExceptionMsg;
+
+    assertNotThrown(checkIoModeKeys(["io": "vibe", "io_mode": "vibe"]));
+    assertNotThrown(checkIoModeKeys(["io": "auto", "io_mode": "auto_"])); // the same mode
+    assertNotThrown(checkIoModeKeys(["io": "phobos", "host": "h"]));
+    assertNotThrown(checkIoModeKeys(null));
+
+    auto message = collectExceptionMsg(checkIoModeKeys(["io": "vibe", "io_mode": "phobos"]));
+    assert(message == "'io' and 'io_mode' give different I/O modes ('vibe' and 'phobos')", message);
+    // an invalid value is reported as such, under its own key
+    message = collectExceptionMsg(checkIoModeKeys(["io": "fibers", "io_mode": "phobos"]));
+    assert(message == "Invalid value 'fibers' for 'io' (auto, phobos or vibe expected)", message);
+    message = collectExceptionMsg(checkIoModeKeys(["io_mode": "threads"]));
+    assert(message == "Invalid value 'threads' for 'io_mode' (auto, phobos or vibe expected)", message);
+
+    // keys in another case: only with ignoreKeyCase
+    assertNotThrown(checkIoModeKeys(["IO": "vibe", "io_mode": "phobos"]));
+    message = collectExceptionMsg(checkIoModeKeys(["IO": "vibe", "Io_Mode": "phobos"], true));
+    assert(message == "'IO' and 'Io_Mode' give different I/O modes ('vibe' and 'phobos')", message);
+    assertThrown!ClientException(checkIoModeKeys(["IO_MODE": "fibers"], true));
+    // two spellings of one key
+    message = collectExceptionMsg(checkIoModeKeys(["io": "vibe", "IO": "phobos"], true));
+    assert(message == "'IO' and 'io' give different I/O modes ('phobos' and 'vibe')", message);
+    assertThrown!ClientException(checkIoModeKeys(["io": "vibe", "IO": "fibers"], true));
+    assertNotThrown(checkIoModeKeys(["io": "vibe", "IO": "vibe", "IO_MODE": "vibe"], true));
+}
+
+/++
+Returns a copy of `params` in which the I/O mode keys (`io_mode` and its short
+form `io`) are a single `io_mode` key. When parameters from several sources
+are merged (a connection string and a service file, or ddbc's properties and
+URL), one source's `io` then overrides another source's `io_mode`, as for any
+other key. Apply it to each source before merging, with the key rule of the
+connector that reads the result: code that merges for several connectors
+(ddbc) passes `ignoreKeyCase` for those whose keys ignore case (Oracle).
+
+Values are checked here, under the key given, whenever a key is renamed or
+dropped: a single key other than exactly `io_mode` (`io`, or `IO_MODE` with
+`ignoreKeyCase`), and every value when the source gives more than one of the
+keys, since they must agree. This happens even if another source overrides
+them after merging. A single `io_mode` is checked after merging, when the
+connector reads it, so that a source's invalid `io_mode` that another source
+overrides doesn't matter, as for any other key. If several keys are given,
+the value of `io_mode` is kept.
+
+Params:
+    params = the parameters of one source
+    ignoreKeyCase = whether keys match in any case (see `checkIoModeKeys`);
+        every spelling of the two keys is then replaced
+
+Returns: the parameters with at most one I/O mode key, `io_mode`; empty (and
+possibly `null`) for empty `params`.
+
+Throws: `ClientException` as `checkIoModeKeys`, for the values checked.
++/
+string[string] normalizeIoModeKey(const string[string] params, bool ignoreKeyCase = false) @safe
+{
+    const keys = ioModeKeys(params, ignoreKeyCase);
+    if (keys.length > 1)
+        checkModes(params, keys);
+    else if (keys.length == 1 && keys[0] != "io_mode")
+        parseIoMode(keys[0], params[keys[0]]); // renamed below: report an invalid value under the key given
+    string[string] result;
+    foreach (key, value; params)
+        result[key] = value;
+    if (keys.length == 0)
+        return result;
+    string value = params[keys[0]];
+    foreach (key; keys)
+    {
+        if (key.length == 7) // io_mode, in some case; the others are io
+        {
+            value = params[key];
+            break;
+        }
+    }
+    foreach (key; keys)
+        result.remove(key);
+    result["io_mode"] = value;
+    return result;
+}
+
+///
+@safe unittest
+{
+    import std.exception : assertThrown, collectExceptionMsg;
+
+    auto url = normalizeIoModeKey(["io": "vibe", "host": "h"]);
+    auto properties = normalizeIoModeKey(["io_mode": "phobos", "user": "u"]);
+    assert(url == ["io_mode": "vibe", "host": "h"]);
+    // merged: the URL's mode overrides the properties' one
+    foreach (key, value; url)
+        properties[key] = value;
+    assert(properties["io_mode"] == "vibe");
+
+    assert(normalizeIoModeKey(["io": "auto", "io_mode": "auto_"]) == ["io_mode": "auto_"]);
+    assert(normalizeIoModeKey(["IO": "vibe", "x": "1"], true) == ["io_mode": "vibe", "x": "1"]);
+    assert(normalizeIoModeKey(["IO": "vibe", "x": "1"]) == ["IO": "vibe", "x": "1"]);
+    assert(normalizeIoModeKey(["IO": "auto", "Io_Mode": "auto_"], true) == ["io_mode": "auto_"]);
+    assert(normalizeIoModeKey(null).length == 0);
+    // a single io_mode is checked after merging, when the connector reads it; io under its own name
+    assert(normalizeIoModeKey(["io_mode": "fibers"]) == ["io_mode": "fibers"]);
+    auto message = collectExceptionMsg(normalizeIoModeKey(["io": "fibers"]));
+    assert(message == "Invalid value 'fibers' for 'io' (auto, phobos or vibe expected)", message);
+    message = collectExceptionMsg(normalizeIoModeKey(["IO": "fibers"], true));
+    assert(message == "Invalid value 'fibers' for 'IO' (auto, phobos or vibe expected)", message);
+    message = collectExceptionMsg(normalizeIoModeKey(["IO_MODE": "fibers"], true));
+    assert(message == "Invalid value 'fibers' for 'IO_MODE' (auto, phobos or vibe expected)", message);
+    // checked although another source would override it: the properties' io here
+    assertThrown!ClientException(normalizeIoModeKey(["io": "fibers", "user": "u"]));
+    assertThrown!ClientException(normalizeIoModeKey(["io": "fibers", "io_mode": "vibe"]));
+    assertThrown!ClientException(normalizeIoModeKey(["io_mode": "fibers", "IO_MODE": "vibe"], true));
+
+    const string[string] conflict = ["io": "vibe", "io_mode": "phobos"];
+    assertThrown!ClientException(normalizeIoModeKey(conflict));
+    // other keys need not be valid UTF-8
+    assert(normalizeIoModeKey(["\xFF": "x", "IO": "vibe"], true) == ["\xFF": "x", "io_mode": "vibe"]);
+}
+
+// The keys of `params` that are `io` or `io_mode` (with ASCII letters in any case with `ignoreKeyCase`),
+// sorted, so that messages don't depend on the associative array's order. ASCII only: the names are ASCII,
+// and other keys need not be valid UTF-8.
+private string[] ioModeKeys(const string[string] params, bool ignoreKeyCase) @safe
+{
+    import std.algorithm.sorting : sort;
+
+    string[] keys;
+    foreach (key, value; params)
+    {
+        if (ignoreKeyCase)
+        {
+            if (equalsAsciiFold(key, "io") || equalsAsciiFold(key, "io_mode"))
+                keys ~= key;
+        }
+        else if (key == "io" || key == "io_mode")
+            keys ~= key;
+    }
+    keys.sort();
+    return keys;
+}
+
+// Whether `key` is `name` (lowercase ASCII) with ASCII letters in any case. Compares bytes, so a key that
+// isn't valid UTF-8 is simply different.
+private bool equalsAsciiFold(string key, string name) @safe pure nothrow @nogc
+{
+    import std.ascii : toLower;
+
+    if (key.length != name.length)
+        return false;
+    foreach (i, char c; key)
+        if (toLower(c) != name[i])
+            return false;
+    return true;
 }
 
 // The accepted values for the error message, from the IoMode members: "auto, phobos or vibe"

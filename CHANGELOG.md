@@ -16,6 +16,22 @@ All notable changes to dbwire are documented here. The format follows
   dbwire keep working unchanged. `waitForData` pauses through it when it polls
   a transport that can't wait (#97).
 
+- `dbwire:client`: `checkIoModeKeys` and `normalizeIoModeKey`, the rule for
+  the I/O mode keys `io_mode` and its short form `io`, shared by the
+  connectors (each had its own copy). Both take `ignoreKeyCase` for
+  connectors whose keys ignore case (#95).
+  - `checkIoModeKeys` checks one source: every value is validated under its
+    own key, and only different *modes* conflict, so `io=auto&io_mode=auto_`
+    is accepted and `io=fibers&io_mode=phobos` reports the invalid value.
+  - `normalizeIoModeKey` returns a copy with a single `io_mode` key, for code
+    that merges several sources: one source's `io` then overrides another's
+    `io_mode`. It validates, under the key given, a single key other than
+    exactly `io_mode` (`io`, or `IO_MODE` with `ignoreKeyCase`), since it is
+    renamed, and all values of a source that gives several keys, even if
+    another source overrides them. A single `io_mode` is left for the
+    connector to check after merging, so an overridden invalid value doesn't
+    matter, as for any other key.
+
 ### Changed
 
 - `dbwire:types`: `Decimal.unscaled` and `Decimal.scale` are properties that
