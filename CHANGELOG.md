@@ -6,6 +6,11 @@ All notable changes to dbwire are documented here. The format follows
 
 ## Unreleased
 
+## 0.9.9 — 2026-11-23
+
+Shared I/O mode key handling for the connectors, a pause in the backend's I/O
+mode, and checked `Decimal` parts.
+
 ### Added
 
 - `dbwire:io`: `sleepFor(backend, duration)` pauses in the backend's I/O mode:
