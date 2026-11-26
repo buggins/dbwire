@@ -6,13 +6,17 @@ All notable changes to dbwire are documented here. The format follows
 
 ## Unreleased
 
+## 0.9.10 — 2026-11-26
+
+A TLS fix for waiting on data.
+
 ### Fixed
 
 - `dbwire:tls`: `TlsTransport.dataAvailable()` and `waitForData` missed TLS
   records already read into the input buffer but not decrypted yet (e.g. a
   second record that arrived with the first): they reported no data, and
   `waitForData` waited for the socket until its timeout, although `read()`
-  would have returned at once (#103). Found through mssql-native's command
+  would have returned at once (#103, PR #104). Found through mssql-native's command
   timeout, whose wait for the server's cancel acknowledgement timed out.
 
 ## 0.9.9 — 2026-11-23
