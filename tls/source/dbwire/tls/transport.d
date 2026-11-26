@@ -379,10 +379,17 @@ final class TlsTransport : Transport, WaitableTransport
             failed = true;
         if (plain.length || ended || sslPendingBytes() > 0)
             return true;
-        while (raw.dataAvailable())
+        for (;;)
         {
-            if (!fill())
-                return true; // end of stream: read() returns 0 without blocking
+            // records already read into the input BIO come first (#103): the raw transport may have nothing more
+            if (receivedPending() <= 0)
+            {
+                if (!raw.dataAvailable())
+                    return false;
+                if (!fill())
+                    return true; // end of stream: read() returns 0 without blocking
+            }
+            const pendingBefore = receivedPending();
             const r = sslRead(plainBuffer);
             if (r.outputPending)
                 flushOutput();
@@ -398,8 +405,16 @@ final class TlsTransport : Transport, WaitableTransport
             }
             if (r.error != sslErrorWantRead)
                 throw failure("TLS read failed", r.reasons);
+            // records without application data were consumed, and more input is buffered: try those first
+            const pendingAfter = receivedPending();
+            if (pendingAfter > 0 && pendingAfter != pendingBefore)
+                continue;
+            // only part of a record is buffered: the rest must come from the raw transport
+            if (!raw.dataAvailable())
+                return false;
+            if (!fill())
+                return true;
         }
-        return false;
     }
 
     /// Whether `waitForData` can wait: when the raw transport can.
@@ -1265,6 +1280,27 @@ unittest
     assert(pair.client.dataAvailable());
     auto reply = new ubyte[4];
     assert(pair.client.read(reply) == 1 && reply[0] == 42);
+    assert(!pair.client.dataAvailable());
+}
+
+// dataAvailable and waitForData see a record already read into the input BIO (#103): the server's two
+// records arrive together, the client reads the first; the second waits in the BIO, not on the socket
+unittest
+{
+    if (!haveOpenSsl())
+        return;
+    auto pair = connectPair(trustingOptions());
+    scope (exit)
+        pair.close();
+    assert(pair.clientError is null && pair.serverError is null);
+    pair.server.write([1]);
+    pair.server.write([2]); // a record of its own
+    Thread.sleep(200.msecs); // both are in the client's socket buffer
+    ubyte[1] got;
+    assert(pair.client.read(got[]) == 1 && got[0] == 1);
+    assert(pair.client.dataAvailable(), "the second record, read into the BIO with the first, is not seen");
+    assert(pair.client.waitForData(1.seconds));
+    assert(pair.client.read(got[]) == 1 && got[0] == 2);
     assert(!pair.client.dataAvailable());
 }
 
